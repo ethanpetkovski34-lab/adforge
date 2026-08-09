@@ -1,0 +1,10 @@
+# The desktop installers are huge and belong on GitHub Releases, not Vercel.
+dist
+build
+electron.js
+build.json
+.github
+*.dmg
+*.exe
+*.AppImage
+PAYMENTS-SETUP.md

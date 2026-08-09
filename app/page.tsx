@@ -4,9 +4,11 @@ import { CHECKOUT_URL, isLive } from "./checkout";
 
 // Desktop builds — GitHub Releases. Until a real release exists these point at
 // the releases page, which is honest rather than a dead download link.
+const R = "https://github.com/ethanpetkovski34-lab/adforge/releases/latest/download";
 const DOWNLOAD = {
-  mac: "https://github.com/ethanpetkovski34-lab/adforge/releases/latest",
-  win: "https://github.com/ethanpetkovski34-lab/adforge/releases/latest",
+  mac: `${R}/AdForge-1.0.0-arm64.dmg`,
+  win: `${R}/AdForge.Setup.1.0.0.exe`,
+  linux: `${R}/AdForge-1.0.0.AppImage`,
   all: "https://github.com/ethanpetkovski34-lab/adforge/releases/latest",
 };
 
@@ -178,6 +180,7 @@ export default function Landing() {
           <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
             <a href={DOWNLOAD.mac} target="_blank" rel="noreferrer" className="btn prime">⬇ Download for Mac</a>
             <a href={DOWNLOAD.win} target="_blank" rel="noreferrer" className="btn ghost">⬇ Windows</a>
+            <a href={DOWNLOAD.linux} target="_blank" rel="noreferrer" className="btn ghost">⬇ Linux</a>
             <a href="/studio" className="btn ghost">or use it in the browser</a>
           </div>
           <div style={{ marginTop: 14, fontSize: 12.5, color: "#5d78ad" }}>
