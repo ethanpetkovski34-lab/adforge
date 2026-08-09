@@ -19,7 +19,9 @@ export default function Studio() {
   const [pro, setPro] = useState(false);
   const [siteUrl, setSiteUrl] = useState("");
   const [scanning, setScanning] = useState(false);
-  const [scanned, setScanned] = useState<{ features: string[]; pricing: string; images: string[] } | null>(null);
+  const [scanned, setScanned] = useState<{ features: string[]; pricing: string; images: string[]; brand: string[] } | null>(null);
+  const [colA, setColA] = useState("");
+  const [colB, setColB] = useState("");
   const [product, setProduct] = useState("");
   const [what, setWhat] = useState("");
   const [audience, setAudience] = useState("");
@@ -63,7 +65,9 @@ export default function Studio() {
       const i = d.info;
       setProduct(i.product || ""); setWhat(i.what || ""); setAudience(i.audience || "");
       if (i.tone) setVibe(i.tone);
-      setScanned({ features: i.features || [], pricing: i.pricing || "", images: i.images || [] });
+      setScanned({ features: i.features || [], pricing: i.pricing || "", images: i.images || [], brand: i.brand || [] });
+      if (i.brand?.[0]) setColA(i.brand[0]);
+      if (i.brand?.[1]) setColB(i.brand[1]);
     } catch { setErr("Couldn't read that site. Fill it in yourself and carry on."); }
     setScanning(false);
   }
@@ -79,6 +83,9 @@ export default function Studio() {
       });
       const d = await r.json();
       if (!r.ok || !d.script) throw new Error(d.error || "Could not write the script");
+      // whatever the customer picked (or we read off their site) beats the AI's guess
+      if (colA) d.script.palette.a = colA;
+      if (colB) d.script.palette.b = colB;
       setScript(d.script); setStep(2);
     } catch (e: any) { setErr(e.message || "Something went wrong"); }
     setBusy("");
@@ -219,7 +226,7 @@ export default function Studio() {
     const vStream = (cv as any).captureStream(30) as MediaStream;
     const mixed = new MediaStream([...vStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
     const mime = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find(m => MediaRecorder.isTypeSupported(m)) || "";
-    const rec = new MediaRecorder(mixed, mime ? { mimeType: mime, videoBitsPerSecond: pro ? 9_000_000 : 4_500_000 } : undefined);
+    const rec = new MediaRecorder(mixed, mime ? { mimeType: mime, videoBitsPerSecond: pro ? 6_500_000 : 4_000_000 } : undefined);
     const out: Blob[] = [];
     rec.ondataavailable = e => { if (e.data.size) out.push(e.data); };
 
@@ -239,6 +246,7 @@ export default function Studio() {
     });
 
     let shotIdx = -1;
+    let frameNo = 0;
     const t0 = performance.now();
 
     await new Promise<void>(finish => {
@@ -293,12 +301,15 @@ export default function Studio() {
         if (el <= acc) brandBar(g, W, H, product, el, TOTAL, A, B);
         } catch (e) { if (!(window as any).__adfErr) { (window as any).__adfErr = String(e); console.error("AdForge draw error:", e); } }
 
-        // grain — one stamped tile, offset randomly so it still shimmers
+        // grain on alternate frames only — same look, half the cost
+        frameNo++;
+        if (frameNo % 2 === 0) {
         g.save();
         g.globalAlpha = 0.05;
         const gox = -Math.random() * 256, goy = -Math.random() * 256;
         for (let ty = goy; ty < H; ty += 256) for (let tx = gox; tx < W; tx += 256) g.drawImage(grainCv, tx, ty);
         g.restore();
+        }
 
         // progress line
         g.fillStyle = "rgba(255,255,255,0.16)"; g.fillRect(0, H - 7, W, 7);
@@ -395,6 +406,26 @@ export default function Studio() {
                     <option value={15} style={{ background: "#0b1024" }}>15 seconds</option>
                     <option value={30} style={{ background: "#0b1024" }}>30 seconds {pro ? "" : "(Pro)"}</option>
                   </select>
+                </div>
+              </div>
+              <div>
+                <label style={{ ...S.label, display: "flex", justifyContent: "space-between" }}>
+                  <span>BRAND COLOURS</span>
+                  {scanned?.brand?.length ? <span style={{ color: "#8fe3c0", letterSpacing: 0 }}>✓ from your site</span> : null}
+                </label>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                  {([["Main", colA, setColA, "#2af0ff"], ["Accent", colB, setColB, "#ffd24a"]] as const).map(([lbl, val, setter, dflt]) => (
+                    <label key={lbl} style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(8,12,30,.7)", border: "1px solid #2a3a68", borderRadius: 12, padding: "8px 12px", cursor: "pointer", flex: 1, minWidth: 130 }}>
+                      <input type="color" value={val || dflt} onChange={e => setter(e.target.value)}
+                        style={{ width: 30, height: 30, border: "none", background: "none", padding: 0, cursor: "pointer" }} />
+                      <span style={{ fontSize: 12.5, color: "#bcd0ff" }}>{lbl}</span>
+                      <span style={{ fontSize: 11, color: "#5d78ad", marginLeft: "auto" }}>{(val || dflt).toUpperCase()}</span>
+                    </label>
+                  ))}
+                  {(colA || colB) && (
+                    <button onClick={() => { setColA(""); setColB(""); }} className="zbtn"
+                      style={{ ...S.btn, ...S.ghost, padding: "9px 13px", fontSize: 11.5 }}>Let AI choose</button>
+                  )}
                 </div>
               </div>
               <div>

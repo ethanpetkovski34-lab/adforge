@@ -96,6 +96,35 @@ export async function POST(req: Request) {
       : '').trim().slice(0, 300);
     const body = (html ? textFrom(html) : plain.replace(/\s+/g, ' ').trim()).slice(0, 12000);
 
+    // Pull the brand's actual colours out of the page CSS so the ad matches
+    // their site instead of whatever the AI invents.
+    const brand: string[] = [];
+    if (html) {
+      const counts: Record<string, number> = {};
+      const hexes = html.match(/#[0-9a-fA-F]{6}\b/g) || [];
+      for (const h of hexes) {
+        const hx = h.toLowerCase();
+        const r = parseInt(hx.slice(1, 3), 16), gg = parseInt(hx.slice(3, 5), 16), b = parseInt(hx.slice(5, 7), 16);
+        const max = Math.max(r, gg, b), min = Math.min(r, gg, b);
+        const lum = (max + min) / 2, sat = max === min ? 0 : (max - min) / (255 - Math.abs(max + min - 255) || 1);
+        if (lum < 28 || lum > 232) continue;    // skip near-black / near-white
+        if (sat < 0.25) continue;               // skip greys — not brand colours
+        counts[hx] = (counts[hx] || 0) + 1;
+      }
+      const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(e => e[0]);
+      const hue = (h: string) => {
+        const r = parseInt(h.slice(1,3),16)/255, g2 = parseInt(h.slice(3,5),16)/255, b = parseInt(h.slice(5,7),16)/255;
+        const mx = Math.max(r,g2,b), mn = Math.min(r,g2,b), d = mx - mn;
+        if (!d) return 0;
+        return 60 * (mx === r ? ((g2-b)/d+6)%6 : mx === g2 ? (b-r)/d+2 : (r-g2)/d+4);
+      };
+      for (const h of ranked) {
+        if (!brand.length) { brand.push(h); continue; }
+        // second colour should be visibly different, not a shade of the first
+        if (Math.abs(hue(h) - hue(brand[0])) > 40) { brand.push(h); break; }
+      }
+    }
+
     // Grab real images off the page — used when someone makes an ad with no footage.
     const images: string[] = [];
     if (html) {
@@ -161,6 +190,7 @@ Use ONLY what the page actually says. Never invent prices or features. If someth
         pricing: String(info.pricing || '').trim().slice(0, 200),
         tone: ['Bold & modern', 'Cinematic', 'Playful', 'Premium & minimal', 'High energy'].includes(info.tone) ? info.tone : 'Bold & modern',
         images: images.slice(0, 6),
+        brand,
         url,
       },
     });
