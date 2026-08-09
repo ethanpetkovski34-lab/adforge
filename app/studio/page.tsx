@@ -35,6 +35,7 @@ export default function Studio() {
   const [clipUrl, setClipUrl] = useState("");
   const [progress, setProgress] = useState(0);
   const [outUrl, setOutUrl] = useState("");
+  const [outBlob, setOutBlob] = useState<Blob | null>(null);
   const [showPay, setShowPay] = useState(false);
   const [code, setCode] = useState("");
   const [previewing, setPreviewing] = useState(-1);
@@ -117,6 +118,29 @@ export default function Studio() {
   async function onUpload(e: any) {
     const f = e.target.files?.[0]; if (!f) return;
     setClipUrl(u => { if (u) URL.revokeObjectURL(u); return URL.createObjectURL(f); });
+  }
+
+  // Downloading a blob via <a href> silently does nothing in the desktop app and
+  // fails quietly on an empty render, so do it explicitly and say what happened.
+  function downloadAd() {
+    if (!outBlob || outBlob.size < 1000) {
+      setErr("There's no finished video to download — forge the ad again.");
+      return;
+    }
+    const name = `${(product || "ad").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "ad"}-adforge.webm`;
+    try {
+      const url = URL.createObjectURL(outBlob);
+      const a = document.createElement("a");
+      a.href = url; a.download = name; a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 4000);
+      setErr("");
+    } catch {
+      // last resort: open it so they can right-click → Save
+      try { window.open(outUrl, "_blank"); } catch {}
+      setErr("If the download didn't start, right-click the video above and choose Save Video As.");
+    }
   }
 
   // ---------- 3. Forge the ad — analyse, cut, then render ----------
@@ -330,7 +354,10 @@ export default function Studio() {
     await done;
     try { vid?.pause(); } catch {}
     try { await ac.close(); } catch {}
-    setOutUrl(URL.createObjectURL(new Blob(out, { type: "video/webm" })));
+    const finalBlob = new Blob(out, { type: "video/webm" });
+    setOutBlob(finalBlob);
+    setOutUrl(URL.createObjectURL(finalBlob));
+    if (finalBlob.size < 20000) setErr("The render produced an empty file — try again, or use a shorter clip.");
     setBusy(""); setProgress(100); setStep(4);
   }
 
@@ -546,9 +573,11 @@ export default function Studio() {
             <p style={{ color: "#8ea5d4", margin: "0 0 18px", fontSize: 14.5 }}>Download it and post it. WebM plays everywhere and uploads straight to TikTok, Reels and Shorts.</p>
             {outUrl && <video src={outUrl} controls autoPlay loop style={{ width: "100%", maxWidth: 320, display: "block", margin: "0 auto 18px", borderRadius: 16, border: "1px solid #2af0ff44", background: "#000" }} />}
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
-              <a href={outUrl} download={`${(product || "ad").toLowerCase().replace(/\s+/g, "-")}-adforge.webm`} style={{ ...S.btn, ...S.prime, textDecoration: "none", display: "inline-block" }}>⬇ Download my ad</a>
-              <button onClick={() => { setStep(3); setOutUrl(""); }} style={{ ...S.btn, ...S.ghost }}>↻ Re-forge</button>
-              <button onClick={() => { setStep(1); setScript(null); setOutUrl(""); setClipUrl(""); }} style={{ ...S.btn, ...S.ghost }}>+ New ad</button>
+              <button onClick={downloadAd} style={{ ...S.btn, ...S.prime }}>
+                ⬇ Download my ad{outBlob ? ` · ${(outBlob.size / 1048576).toFixed(1)} MB` : ""}
+              </button>
+              <button onClick={() => { setStep(3); setOutUrl(""); setOutBlob(null); }} style={{ ...S.btn, ...S.ghost }}>↻ Re-forge</button>
+              <button onClick={() => { setStep(1); setScript(null); setOutUrl(""); setOutBlob(null); setClipUrl(""); }} style={{ ...S.btn, ...S.ghost }}>+ New ad</button>
             </div>
             {!pro && (
               <div style={{ marginTop: 22, padding: 16, borderRadius: 14, background: "rgba(42,238,170,.07)", border: "1px solid #2aeeaa33", textAlign: "center" }}>
