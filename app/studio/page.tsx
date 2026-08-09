@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { CHECKOUT_URL, isLive } from "../checkout";
+import { saveAd, listAds, deleteAd, clearAds, makeThumb, prettySize, prettyDate, type SavedAd } from "./library";
 import { analyseFootage, buildEDL, drawShot, drawText, drawEndCard, drawMotionOnly, drawFeatureAnim, pickAnim, lightLeak, letterbox, brandBar, lowerThird, type Script as EScript } from "./engine";
 
 type Script = EScript;
@@ -36,6 +37,9 @@ export default function Studio() {
   const [progress, setProgress] = useState(0);
   const [outUrl, setOutUrl] = useState("");
   const [outBlob, setOutBlob] = useState<Blob | null>(null);
+  const [library, setLibrary] = useState<SavedAd[]>([]);
+  const [showLib, setShowLib] = useState(false);
+  const [playing, setPlaying] = useState<string>("");
   const [showPay, setShowPay] = useState(false);
   const [code, setCode] = useState("");
   const [previewing, setPreviewing] = useState(-1);
@@ -50,6 +54,7 @@ export default function Studio() {
       setPro(localStorage.getItem("adforge-pro") === "1");
       if (u.get("upgrade")) setShowPay(true);
     } catch {}
+    listAds().then(setLibrary);
   }, []);
 
   // ---------- 0. Read their website and fill the brief in for them ----------
@@ -141,6 +146,28 @@ export default function Studio() {
       try { window.open(outUrl, "_blank"); } catch {}
       setErr("If the download didn't start, right-click the video above and choose Save Video As.");
     }
+  }
+
+  function downloadSaved(ad: SavedAd) {
+    try {
+      const url = URL.createObjectURL(ad.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${ad.product.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "ad"}-adforge.webm`;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 4000);
+    } catch {}
+  }
+  async function removeAd(ad: SavedAd) {
+    if (!confirm(`Delete this ad for "${ad.product}"? This can't be undone.`)) return;
+    await deleteAd(ad.id);
+    setLibrary(await listAds());
+    if (playing === ad.id) setPlaying("");
+  }
+  async function removeAll() {
+    if (!confirm(`Delete all ${library.length} saved ads? This can't be undone.`)) return;
+    await clearAds();
+    setLibrary([]); setPlaying("");
   }
 
   // ---------- 3. Forge the ad — analyse, cut, then render ----------
@@ -357,6 +384,21 @@ export default function Studio() {
     const finalBlob = new Blob(out, { type: "video/webm" });
     setOutBlob(finalBlob);
     setOutUrl(URL.createObjectURL(finalBlob));
+    // keep it — every ad you make lands in the library automatically
+    if (finalBlob.size > 20000) {
+      const ad: SavedAd = {
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+        product: product || "Untitled",
+        headline: script.hook || script.scenes[0]?.headline || "",
+        created: Date.now(),
+        duration: TOTAL,
+        size: finalBlob.size,
+        thumb: makeThumb(cv),
+        blob: finalBlob,
+      };
+      await saveAd(ad);
+      listAds().then(setLibrary);
+    }
     if (finalBlob.size < 20000) setErr("The render produced an empty file — try again, or use a shorter clip.");
     setBusy(""); setProgress(100); setStep(4);
   }
@@ -378,6 +420,9 @@ export default function Studio() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 26 }}>
           <a href="/" style={{ fontWeight: 900, letterSpacing: 2, color: "#e8edff", textDecoration: "none" }}>◈ ADFORGE</a>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button onClick={() => setShowLib(v => !v)} className="zbtn" style={{ ...S.btn, ...S.ghost, padding: "8px 14px", fontSize: 12.5, borderColor: showLib ? "#2af0ff" : "#33477c", color: showLib ? "#2af0ff" : "#bcd0ff" }}>
+              📁 My ads{library.length ? ` (${library.length})` : ""}
+            </button>
             <span style={{ fontSize: 11, letterSpacing: 1.4, padding: "6px 12px", borderRadius: 20, border: `1px solid ${pro ? "#2aeeaa66" : "#33477c"}`, color: pro ? "#2aeeaa" : "#7f9ad0" }}>{pro ? "PRO" : "FREE"}</span>
             {!pro && <button onClick={() => setShowPay(true)} style={{ ...S.btn, ...S.ghost, padding: "8px 16px", fontSize: 12.5 }}>Upgrade</button>}
           </div>
@@ -392,10 +437,72 @@ export default function Studio() {
           ))}
         </div>
 
+        {showLib && (
+          <div style={{ ...S.card, marginBottom: 18 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 10 }}>
+              <h2 style={{ margin: 0, fontSize: 22 }}>📁 My ads</h2>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {library.length > 0 && (
+                  <>
+                    <span style={{ fontSize: 12, color: "#5d78ad" }}>
+                      {library.length} saved · {prettySize(library.reduce((n, a) => n + a.size, 0))}
+                    </span>
+                    <button onClick={removeAll} className="zbtn" style={{ ...S.btn, ...S.ghost, padding: "7px 12px", fontSize: 11.5, borderColor: "#ff465a55", color: "#ff9aa8" }}>Delete all</button>
+                  </>
+                )}
+                <button onClick={() => setShowLib(false)} className="zbtn" style={{ ...S.btn, ...S.ghost, padding: "7px 12px", fontSize: 11.5 }}>✕ Close</button>
+              </div>
+            </div>
+            <p style={{ color: "#8ea5d4", margin: "0 0 18px", fontSize: 13.5 }}>
+              Every ad you make is saved here on this device. Nothing is uploaded anywhere.
+            </p>
+
+            {library.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "34px 10px", color: "#5d78ad" }}>
+                <div style={{ fontSize: 34, marginBottom: 10 }}>🎬</div>
+                <div style={{ fontSize: 14.5, marginBottom: 16 }}>No ads yet — make your first one and it'll appear here.</div>
+                <button onClick={() => { setShowLib(false); setStep(1); }} style={{ ...S.btn, ...S.prime }}>Make an ad</button>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 14 }}>
+                {library.map(ad => (
+                  <div key={ad.id} style={{ border: "1px solid #22305c", borderRadius: 14, overflow: "hidden", background: "rgba(8,12,30,.6)" }}>
+                    <div style={{ position: "relative", background: "#000", aspectRatio: "9/16", maxHeight: 260, overflow: "hidden" }}>
+                      {playing === ad.id ? (
+                        <video src={URL.createObjectURL(ad.blob)} controls autoPlay loop style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                      ) : (
+                        <>
+                          {ad.thumb
+                            ? <img src={ad.thumb} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", opacity: .85 }} />
+                            : <div style={{ width: "100%", height: "100%", background: "linear-gradient(160deg,#0a1230,#060a1e)" }} />}
+                          <button onClick={() => setPlaying(ad.id)} aria-label="Play"
+                            style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.25)", border: "none", color: "#fff", fontSize: 34, cursor: "pointer" }}>▶</button>
+                        </>
+                      )}
+                    </div>
+                    <div style={{ padding: "11px 12px" }}>
+                      <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ad.product}</div>
+                      <div style={{ fontSize: 11.5, color: "#8ea5d4", marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ad.headline}</div>
+                      <div style={{ fontSize: 11, color: "#5d78ad", marginBottom: 10 }}>
+                        {prettyDate(ad.created)} · {Math.round(ad.duration)}s · {prettySize(ad.size)}
+                      </div>
+                      <div style={{ display: "flex", gap: 7 }}>
+                        <button onClick={() => downloadSaved(ad)} className="zbtn" style={{ ...S.btn, ...S.prime, flex: 1, padding: "9px", fontSize: 12 }}>⬇ Save</button>
+                        <button onClick={() => removeAd(ad)} className="zbtn" title="Delete"
+                          style={{ ...S.btn, ...S.ghost, padding: "9px 12px", fontSize: 12, borderColor: "#ff465a44", color: "#ff9aa8" }}>🗑</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {err && <div style={{ background: "rgba(255,70,90,.1)", border: "1px solid #ff465a55", color: "#ff9aa8", padding: "12px 16px", borderRadius: 12, marginBottom: 16, fontSize: 14 }}>{err}</div>}
 
         {/* STEP 1 — BRIEF */}
-        {step === 1 && (
+        {!showLib && step === 1 && (
           <div style={S.card}>
             <h2 style={{ margin: "0 0 6px", fontSize: 24 }}>Tell it about your product</h2>
             <p style={{ color: "#8ea5d4", margin: "0 0 18px", fontSize: 14.5 }}>Or just paste your link — it'll read your site and fill this in for you.</p>
@@ -480,7 +587,7 @@ export default function Studio() {
         )}
 
         {/* STEP 2 — SCRIPT */}
-        {step === 2 && script && (
+        {!showLib && step === 2 && script && (
           <div style={S.card}>
             <h2 style={{ margin: "0 0 6px", fontSize: 24 }}>Your ad, written</h2>
             <p style={{ color: "#8ea5d4", margin: "0 0 20px", fontSize: 14.5 }}>Edit anything you don't like — it's your ad.</p>
@@ -517,7 +624,7 @@ export default function Studio() {
         )}
 
         {/* STEP 3 — FOOTAGE */}
-        {step === 3 && (
+        {!showLib && step === 3 && (
           <div style={S.card}>
             <h2 style={{ margin: "0 0 6px", fontSize: 24 }}>Add your visuals</h2>
             <p style={{ color: "#8ea5d4", margin: "0 0 20px", fontSize: 14.5 }}>
@@ -567,7 +674,7 @@ export default function Studio() {
         )}
 
         {/* STEP 4 — RESULT */}
-        {step === 4 && (
+        {!showLib && step === 4 && (
           <div style={S.card}>
             <h2 style={{ margin: "0 0 6px", fontSize: 24 }}>🔥 Your ad is ready</h2>
             <p style={{ color: "#8ea5d4", margin: "0 0 18px", fontSize: 14.5 }}>Download it and post it. WebM plays everywhere and uploads straight to TikTok, Reels and Shorts.</p>
