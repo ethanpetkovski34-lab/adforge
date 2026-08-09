@@ -1,0 +1,42 @@
+{
+  "appId": "com.ethanpetkovski.adforge",
+  "productName": "AdForge",
+  "asar": true,
+  "directories": {
+    "output": "dist"
+  },
+  "extraMetadata": {
+    "main": "electron.js"
+  },
+  "files": [
+    "electron.js",
+    "package.json",
+    "build/icon.png"
+  ],
+  "mac": {
+    "category": "public.app-category.video",
+    "target": [
+      "dmg"
+    ],
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "extendInfo": {
+      "NSMicrophoneUsageDescription": "AdForge records narration for your ads.",
+      "NSCameraUsageDescription": "AdForge can record video for your ads."
+    },
+    "icon": "build/icon.png"
+  },
+  "win": {
+    "target": [
+      "nsis"
+    ],
+    "icon": "build/icon.png"
+  },
+  "linux": {
+    "target": [
+      "AppImage"
+    ],
+    "category": "AudioVideo",
+    "icon": "build/icon.png"
+  }
+}

@@ -1,0 +1,47 @@
+name: Build desktop apps
+
+# Runs when you push a version tag, e.g.  git tag v1.0.0 && git push --tags
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:        # ...or click "Run workflow" in the Actions tab
+
+permissions:
+  contents: write           # needed to upload the installers to Releases
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false      # one platform failing shouldn't kill the others
+      matrix:
+        include:
+          - os: macos-latest
+            args: --mac
+          - os: windows-latest
+            args: --win
+          - os: ubuntu-latest
+            args: --linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Build installer
+        run: npx electron-builder --config build.json ${{ matrix.args }} --publish never
+
+      - name: Publish to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.AppImage
+          draft: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

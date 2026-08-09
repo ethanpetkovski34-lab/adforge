@@ -1,0 +1,26 @@
+{
+  "name": "adforge",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3100",
+    "build": "next build",
+    "start": "next start",
+    "electron": "electron .",
+    "dist": "electron-builder --config build.json -mwl",
+    "dist:mac": "electron-builder --config build.json --mac"
+  },
+  "dependencies": {
+    "next": "^16.2.12",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "typescript": "^5.7.3",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "main": "electron.js"
+}
