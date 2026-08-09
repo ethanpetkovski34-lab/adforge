@@ -20,6 +20,32 @@ const ease = (x: number) => 1 - Math.pow(1 - x, 3);
 const easeIO = (x: number) => (x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2);
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 
+/** Cheap text glow. canvas shadowBlur is the single most expensive op there is —
+ *  blurring every word every frame at 1080x1920 is what made renders stutter.
+ *  Stacking a few offset low-alpha copies looks the same and costs almost nothing. */
+function glowText(g: CanvasRenderingContext2D, t: string, x: number, y: number, col: string, strength = 1) {
+  if (strength > 0.05) {
+    g.save();
+    g.globalAlpha = 0.16 * strength; g.fillStyle = col;
+    const o = 2.5;
+    g.fillText(t, x - o, y); g.fillText(t, x + o, y);
+    g.fillText(t, x, y - o); g.fillText(t, x, y + o);
+    g.restore();
+  }
+  g.fillText(t, x, y);
+}
+
+/** Cheap drop shadow for cards — an offset dark rounded rect instead of a blur. */
+function cheapShadow(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number, dy = 10) {
+  g.save();
+  g.globalAlpha = 0.45; g.fillStyle = '#000';
+  g.beginPath();
+  g.moveTo(x + r, y + dy); g.arcTo(x + w, y + dy, x + w, y + h + dy, r);
+  g.arcTo(x + w, y + h + dy, x, y + h + dy, r); g.arcTo(x, y + h + dy, x, y + dy, r);
+  g.arcTo(x, y + dy, x + w, y + dy, r); g.closePath(); g.fill();
+  g.restore();
+}
+
 /**
  * Walks the footage and scores how much is *happening* at each moment.
  * Busy moments (typing, clicking, things appearing) score high — those are the
@@ -177,11 +203,10 @@ export function drawShot(o: DrawOpts) {
   const zoneY = H * 0.10, zoneH = H * 0.52;
 
   const drawCrop = (sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number, radius: number) => {
+    cheapShadow(g, dx, dy, dw, dh, radius, 12);
     g.save();
     roundRect(g, dx, dy, dw, dh, radius);
-    g.shadowColor = 'rgba(0,0,0,0.65)'; g.shadowBlur = 34; g.shadowOffsetY = 12;
     g.fillStyle = '#000'; g.fill();
-    g.shadowBlur = 0; g.shadowOffsetY = 0;
     g.clip();
     try { g.drawImage(vid, sx, sy, sw, sh, dx, dy, dw, dh); } catch {}
     g.restore();
@@ -283,9 +308,8 @@ export function drawText(
     g.globalAlpha = e;
     g.translate(cx + widths[i] / 2, lineY + (1 - e) * fs * 0.42);
     g.scale(0.94 + e * 0.06, 0.94 + e * 0.06);
-    g.shadowColor = A; g.shadowBlur = 22 * e;
     g.fillStyle = '#fff';
-    g.fillText(w, 0, 0);
+    glowText(g, w, 0, 0, A, e);
     g.restore();
     cx += widths[i];
   });
@@ -321,8 +345,8 @@ export function drawEndCard(
   let fs = W * 0.11;
   g.font = `900 ${fs}px ui-sans-serif,system-ui,sans-serif`;
   while (g.measureText(product).width > W * 0.84 && fs > W * 0.05) { fs -= W * 0.005; g.font = `900 ${fs}px ui-sans-serif,system-ui,sans-serif`; }
-  g.shadowColor = A; g.shadowBlur = 40; g.fillStyle = '#fff';
-  g.fillText(product || 'Your product', 0, 0);
+  g.fillStyle = '#fff';
+  glowText(g, product || 'Your product', 0, 0, A, 1.4);
   g.restore();
   g.globalAlpha = ease(clamp((p - 0.16) * 2, 0, 1));
   g.font = `600 ${W * 0.042}px ui-sans-serif,system-ui,sans-serif`;
@@ -372,8 +396,7 @@ export function drawMotionOnly(
     const dx = (W - cw) / 2, dy = zoneY + (zoneH - ch) / 2;
     g.save();
     roundRect(g, dx, dy, cw, ch, W * 0.035);
-    g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = 30; g.shadowOffsetY = 10;
-    g.fillStyle = '#000'; g.fill(); g.shadowBlur = 0; g.shadowOffsetY = 0;
+    g.fillStyle = '#000'; g.fill();
     g.clip();
     g.globalAlpha = ease(clamp(local / 0.4, 0, 1));
     g.drawImage(img, dx, dy, cw, ch);
@@ -415,9 +438,7 @@ export function pickAnim(text: string, i: number): AnimKind {
 function panel(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number, A: string, fill = 'rgba(10,16,34,0.92)') {
   g.save();
   roundRect(g, x, y, w, h, r);
-  g.shadowColor = 'rgba(0,0,0,0.6)'; g.shadowBlur = 26; g.shadowOffsetY = 8;
   g.fillStyle = fill; g.fill();
-  g.shadowBlur = 0; g.shadowOffsetY = 0;
   g.strokeStyle = A; g.globalAlpha = 0.45; g.lineWidth = Math.max(1.4, w * 0.004); g.stroke();
   g.restore();
 }
@@ -749,8 +770,7 @@ export function countUp(
   g.save();
   g.textAlign = 'center';
   g.font = `900 ${W * 0.16}px ui-sans-serif,system-ui,sans-serif`;
-  g.shadowColor = A; g.shadowBlur = 34;
   g.fillStyle = '#fff';
-  g.fillText(shown + suffix, W / 2, H * 0.40);
+  glowText(g, shown + suffix, W / 2, H * 0.40, A, 1.3);
   g.restore();
 }

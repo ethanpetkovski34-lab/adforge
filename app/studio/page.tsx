@@ -91,11 +91,12 @@ export default function Studio() {
     try {
       const r = await fetch("/api/voice", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: script.scenes[i].vo, style: voice, pro, speed: voSpeed }),
+        body: JSON.stringify({ text: script.scenes[i].vo, style: voice, pro }),
       });
       if (!r.ok) throw new Error("voice unavailable");
       const url = URL.createObjectURL(new Blob([await r.arrayBuffer()], { type: "audio/mpeg" }));
       const a = new Audio(url);
+      a.playbackRate = voSpeed;
       a.onended = () => { URL.revokeObjectURL(url); setPreviewing(-1); };
       a.onerror = () => { URL.revokeObjectURL(url); setPreviewing(-1); };
       await a.play();
@@ -131,6 +132,19 @@ export default function Studio() {
     const cv = canvasRef.current!; cv.width = W; cv.height = H;
     const g = cv.getContext("2d", { alpha: false })!;
     const blurCv = document.createElement("canvas"); blurCv.width = 40; blurCv.height = 71;
+    // Grain is baked once into a tile and stamped at a random offset each frame.
+    // Drawing ~70 random rects per frame was real render cost for a subtle effect.
+    const grainCv = document.createElement("canvas"); grainCv.width = 256; grainCv.height = 256;
+    (() => {
+      const gx = grainCv.getContext("2d")!;
+      const img = gx.createImageData(256, 256);
+      for (let i = 0; i < img.data.length; i += 4) {
+        const v = Math.random() * 255;
+        img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+        img.data[i + 3] = Math.random() < 0.16 ? 40 : 0;
+      }
+      gx.putImageData(img, 0, 0);
+    })();
 
     // --- narration (all lines at once — one at a time was the slowest part) ---
     setBusy("Recording narration…");
@@ -141,7 +155,7 @@ export default function Studio() {
         try {
           const r = await fetch("/api/voice", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: sc.vo, style: voice, pro, speed: voSpeed }),
+            body: JSON.stringify({ text: sc.vo, style: voice, pro }),
           });
           if (!r.ok) return null;
           const buf = await ac.decodeAudioData(await r.arrayBuffer()).catch(() => null);
@@ -174,7 +188,19 @@ export default function Studio() {
       const an = await analyseFootage(vid, p => setProgress(Math.round(p * 100)));
       setBusy("Cutting the edit…");
       shots = buildEDL(script, an, /energy|playful|bold/i.test(vibe));
-      try { vid.currentTime = shots[0]?.srcIn || 0; await vid.play(); } catch {}
+      // Single seek to the best moment, fully settled before we start recording.
+      const v0 = vid!;
+      v0.loop = true;
+      try {
+        const target = shots[0]?.srcIn || 0;
+        if (target > 0.05) {
+          await new Promise<void>(res => {
+            let done = false; const fin = () => { if (done) return; done = true; res(); };
+            v0.onseeked = fin; v0.currentTime = target; setTimeout(fin, 1500);
+          });
+        }
+        await v0.play();
+      } catch {}
     } else {
       // no footage: use real images off their site
       const urls = (scanned?.images || []).slice(0, 5);
@@ -208,6 +234,7 @@ export default function Studio() {
     bufs.forEach((b, i) => {
       if (!b) return;
       const src = ac.createBufferSource(); src.buffer = b;
+      src.playbackRate.value = voSpeed;   // keeps the natural voice, just paced
       src.connect(dest); src.start(ac.currentTime + starts[i] + 0.1);
     });
 
@@ -247,7 +274,11 @@ export default function Studio() {
             const shot = shots[idx];
             if (idx !== shotIdx) {
               shotIdx = idx;
-              try { vid.currentTime = shot.srcIn; } catch {}
+              // NOTE: deliberately NO seek here. Setting currentTime mid-render
+              // stalls video decoding for 100-300ms and drawImage returns stale
+              // frames — that was the stutter. The clip plays straight through
+              // and each cut changes the FRAMING instead, which still reads as
+              // an edit and stays perfectly smooth.
               try { if (vid.paused) vid.play(); } catch {}
             }
             drawShot({ g, W, H, vid, blurCv, shot, local: el - shot.start, A, B });
@@ -262,13 +293,12 @@ export default function Studio() {
         if (el <= acc) brandBar(g, W, H, product, el, TOTAL, A, B);
         } catch (e) { if (!(window as any).__adfErr) { (window as any).__adfErr = String(e); console.error("AdForge draw error:", e); } }
 
-        // grain
-        g.globalAlpha = 0.045;
-        for (let i = 0; i < 70; i++) {
-          g.fillStyle = Math.random() > 0.5 ? "#fff" : "#000";
-          g.fillRect(Math.random() * W, Math.random() * H, 2, 2);
-        }
-        g.globalAlpha = 1;
+        // grain — one stamped tile, offset randomly so it still shimmers
+        g.save();
+        g.globalAlpha = 0.05;
+        const gox = -Math.random() * 256, goy = -Math.random() * 256;
+        for (let ty = goy; ty < H; ty += 256) for (let tx = gox; tx < W; tx += 256) g.drawImage(grainCv, tx, ty);
+        g.restore();
 
         // progress line
         g.fillStyle = "rgba(255,255,255,0.16)"; g.fillRect(0, H - 7, W, 7);
