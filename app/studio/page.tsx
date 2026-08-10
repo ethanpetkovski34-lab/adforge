@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState } from "react";
 import { CHECKOUT_URL, isLive } from "../checkout";
 import { saveAd, listAds, deleteAd, clearAds, makeThumb, prettySize, prettyDate, type SavedAd } from "./library";
-import { analyseFootage, buildEDL, drawShot, drawText, drawEndCard, drawMotionOnly, drawFeatureAnim, pickAnim, lightLeak, letterbox, brandBar, lowerThird, type Script as EScript } from "./engine";
+import { analyseFootage, buildEDL, drawShot, drawText, drawMotionOnly, drawFeatureAnim, pickAnim, lightLeak, letterbox, brandBar, type Script as EScript } from "./engine";
+import { camera, applyCam, particles, bloom, grade, chroma, hud, drawEndCardPro } from "./motion";
 
 type Script = EScript;
 
@@ -282,6 +283,9 @@ export default function Studio() {
     rec.ondataavailable = e => { if (e.data.size) out.push(e.data); };
 
     const A = script.palette.a, B = script.palette.b;
+    const punchy = /energy|playful|bold/i.test(vibe);
+    let domain = "";
+    try { if (siteUrl.trim()) domain = new URL(/^https?:\/\//i.test(siteUrl) ? siteUrl : "https://" + siteUrl).hostname.replace(/^www\./, ""); } catch {}
     const starts: number[] = []; let acc = 0;
     script.scenes.forEach(sc => { starts.push(acc); acc += sc.t; });
     const TOTAL = acc + 2.6;
@@ -300,37 +304,33 @@ export default function Studio() {
     let frameNo = 0;
     const t0 = performance.now();
 
+    let clock: ScriptProcessorNode | null = null;
     await new Promise<void>(finish => {
-      const next = (fn: () => void) => {
-        // requestAnimationFrame is frozen while a tab is in the background, which
-        // used to hang the whole render. Fall back to a timer when hidden.
-        if (typeof document !== "undefined" && document.hidden) setTimeout(fn, 33);
-        else requestAnimationFrame(fn);
-      };
-      const frame = () => {
-        const el = (performance.now() - t0) / 1000;
-        setProgress(Math.min(100, Math.round((el / TOTAL) * 100)));
-        if (el >= TOTAL) { finish(); return; }
-        next(frame);
+      let stopped = false;
+      let lastEl = -1;
+      const STEP = 1 / 30;
 
+      const frame = (el: number) => {
         try {
         g.fillStyle = "#04060f"; g.fillRect(0, 0, W, H);
 
-        if (el > acc) { drawEndCard(g, W, H, product, script, Math.min(1, (el - acc) / 2.6)); }
+        if (el > acc) {
+          drawEndCardPro(g, W, H, product, script.cta, script.endline, domain, Math.min(1, (el - acc) / 2.6), A, B, el);
+        }
         else {
           const si = Math.max(0, starts.findIndex((st, i) => el >= st && el < st + script.scenes[i].t));
           const sc = script.scenes[si];
+          const lc = el - starts[si];
 
-          if (noFootage) {
-            const lc = el - starts[si], pp = lc / sc.t;
-            // background wash + light bands, then an ANIMATED MOCK-UP of the feature
-            drawMotionOnly(g, W, H, sc, lc, pp, A, B, si, imgs);
-            if (!imgs.length) drawFeatureAnim(g, W, H, pickAnim(sc.headline + " " + sc.sub + " " + sc.vo, si), lc, pp, A, B);
-          } else if (vid) {
-            // which shot are we on? jump the source when the shot changes — this is the cut
+          // Work out where we are in the current SHOT first — the camera, the
+          // impact shake and the chromatic punch all key off the cut, not the scene.
+          let shot = shots[0];
+          let cutLocal = lc, cutDur = sc.t;
+          if (!noFootage && shots.length) {
             let idx = 0;
             for (let i = 0; i < shots.length; i++) if (el >= shots[i].start) idx = i;
-            const shot = shots[idx];
+            shot = shots[idx];
+            cutLocal = el - shot.start; cutDur = shot.dur;
             if (idx !== shotIdx) {
               shotIdx = idx;
               // NOTE: deliberately NO seek here. Setting currentTime mid-render
@@ -338,14 +338,36 @@ export default function Studio() {
               // frames — that was the stutter. The clip plays straight through
               // and each cut changes the FRAMING instead, which still reads as
               // an edit and stays perfectly smooth.
-              try { if (vid.paused) vid.play(); } catch {}
+              try { if (vid && vid.paused) vid.play(); } catch {}
             }
-            drawShot({ g, W, H, vid, blurCv, shot, local: el - shot.start, A, B });
           }
-          drawText(g, W, H, sc, el - starts[si], A, B);
-          // the little professional touches: feature tag, light leak, brand lock-up
-          lowerThird(g, W, H, sc.sub || "", el - starts[si], A, B);
+
+          // everything visual lives under one virtual camera: handheld drift,
+          // a slow push, and a hard shake on every cut
+          const cam = camera(el, cutLocal, cutDur, punchy ? 1 : 0.6);
+          g.save();
+          applyCam(g, W, H, cam);
+          if (noFootage) {
+            // background wash + light bands, then an ANIMATED MOCK-UP of the feature
+            drawMotionOnly(g, W, H, sc, lc, lc / sc.t, A, B, si, imgs);
+            if (!imgs.length) drawFeatureAnim(g, W, H, pickAnim(sc.headline + " " + sc.sub + " " + sc.vo, si), lc, lc / sc.t, A, B);
+          } else if (vid) {
+            drawShot({ g, W, H, vid, blurCv, shot, local: cutLocal, A, B });
+          }
+          g.restore();
+
+          // depth: drifting specks in front of the footage, behind the type
+          particles(g, W, H, el, A, B, 0.85);
+          // glow the highlights, then colour-grade the whole frame
+          bloom(g, cv, W, H, 0.26);
+          grade(g, W, H, A, B, 0.32);
+
+          // type goes on top of the grade so it stays crisp and pure white
+          drawText(g, W, H, sc, lc, A, B);
           lightLeak(g, W, H, el, A);
+          hud(g, W, H, el, A, B, si, script.scenes.length);
+          // RGB split for a few frames after each cut — free when it's not firing
+          chroma(g, cv, W, H, Math.exp(-cutLocal * 12));
         }
         // cinematic bars ease in for the first half-second and stay
         letterbox(g, W, H, Math.min(1, el / 0.5));
@@ -374,8 +396,40 @@ export default function Studio() {
           g.globalAlpha = 1;
         }
       };
-      next(frame);
+
+      const tick = () => {
+        if (stopped) return;
+        const el = (performance.now() - t0) / 1000;
+        if (el >= TOTAL) { stopped = true; finish(); return; }
+        if (el - lastEl < STEP * 0.85) return;   // don't draw faster than we capture
+        lastEl = el;
+        setProgress(Math.min(100, Math.round((el / TOTAL) * 100)));
+        frame(el);
+      };
+
+      // Visible tab: rAF, aligned to the display.
+      const loop = () => { if (stopped) return; tick(); requestAnimationFrame(loop); };
+      requestAnimationFrame(loop);
+
+      // Hidden tab: rAF freezes AND setTimeout gets clamped to once per second,
+      // which silently rendered 1fps slideshows for anyone who switched tabs
+      // mid-render. The audio thread is never throttled, so it drives the frames
+      // whenever the page isn't on screen.
+      try {
+        clock = ac.createScriptProcessor(512, 1, 1);
+        clock.onaudioprocess = () => { if (document.hidden) tick(); };
+        const mute = ac.createGain(); mute.gain.value = 0;
+        clock.connect(mute); mute.connect(ac.destination);
+      } catch {}
     });
+    // (cast: TS narrows `clock` to null because it's only assigned inside the callback)
+    try { (clock as ScriptProcessorNode | null)?.disconnect(); } catch {}
+
+    // Render health, so a future slowdown shows up as a number instead of
+    // someone squinting at the video going "is this laggy?"
+    const fps = frameNo / ((performance.now() - t0) / 1000);
+    console.log(`AdForge: ${frameNo} frames in ${TOTAL.toFixed(1)}s = ${fps.toFixed(1)} fps (30 = perfect)`);
+    (window as any).__adfFps = +fps.toFixed(1);
 
     try { rec.stop(); } catch {}
     await done;

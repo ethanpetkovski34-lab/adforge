@@ -1,6 +1,12 @@
 // AdForge render engine.
 // Analyses the footage, decides where to cut, then renders a properly edited ad.
 
+import {
+  transition, sheen, snapBeat, BEAT,
+  layoutHeadline, drawKinetic, drawKicker, drawRule,
+  type Trans,
+} from './motion';
+
 export type Scene = { t: number; headline: string; sub: string; vo: string; fx: string };
 export type Script = {
   hook: string; scenes: Scene[]; cta: string; endline: string;
@@ -11,8 +17,8 @@ export type Shot = {
   start: number;      // when this shot appears in the ad
   dur: number;
   srcIn: number;      // where to seek in the source footage
-  kind: 'card' | 'pan' | 'punch' | 'split' | 'full';
-  trans: 'cut' | 'whip' | 'flash' | 'glitch' | 'slide';
+  kind: 'card' | 'pan' | 'punch' | 'split' | 'full' | 'tilt';
+  trans: Trans;
   scene: number;      // which script scene it belongs to
 };
 
@@ -129,8 +135,8 @@ export function buildEDL(script: Script, an: { times: number[]; scores: number[]
     used.push(fallback); return fallback;
   };
 
-  const kinds: Shot['kind'][] = ['card', 'pan', 'punch', 'card', 'split', 'punch'];
-  const transes: Shot['trans'][] = ['whip', 'flash', 'glitch', 'slide', 'whip', 'cut'];
+  const kinds: Shot['kind'][] = ['card', 'pan', 'punch', 'tilt', 'split', 'punch', 'card', 'tilt'];
+  const transes: Trans[] = ['whip', 'wipe', 'flash', 'bars', 'smear', 'glitch', 'slide', 'whip'];
 
   let clock = 0;
   script.scenes.forEach((sc, i) => {
@@ -138,17 +144,31 @@ export function buildEDL(script: Script, an: { times: number[]; scores: number[]
     const cuts = energetic ? (sc.t >= 3.4 ? 3 : 2) : (sc.t >= 4 ? 2 : 1);
     const each = sc.t / cuts;
     for (let c = 0; c < cuts; c++) {
+      // Land every cut on the musical grid. Cuts that fall on the beat are the
+      // difference between an edit that feels intentional and one that feels
+      // like a slideshow — but never let snapping shove a cut past its scene.
+      const snapped = c === 0 ? clock : clamp(snapBeat(clock), clock - BEAT * 0.45, clock + BEAT * 0.45);
+      const start = clamp(snapped, shots.length ? shots[shots.length - 1].start + 0.45 : 0, clock + BEAT * 0.45);
+      if (shots.length) {
+        const prev = shots[shots.length - 1];
+        prev.dur = start - prev.start;
+      }
       shots.push({
-        start: clock,
+        start,
         dur: each,
         srcIn: pick(each + 0.35),
         kind: i === 0 && c === 0 ? 'card' : kinds[(i * 2 + c) % kinds.length],
-        trans: clock === 0 ? 'cut' : transes[(i + c) % transes.length],
+        trans: start === 0 ? 'cut' : transes[(i * 2 + c) % transes.length],
         scene: i,
       });
       clock += each;
     }
   });
+  // last shot runs to the end of the last scene
+  if (shots.length) {
+    const last = shots[shots.length - 1];
+    last.dur = Math.max(0.5, clock - last.start);
+  }
   return shots;
 }
 
@@ -226,12 +246,19 @@ export function drawShot(o: DrawOpts) {
     g.fillStyle = '#000'; g.fill();
     g.clip();
     try { g.drawImage(vid, sx, sy, sw, sh, dx, dy, dw, dh); } catch {}
+    // glass: a soft diagonal specular running across the screen surface
+    sheen(g, dx, dy, dw, dh, radius, (local * 0.42 + 0.15) % 1.6, 0.10);
     g.restore();
-    // thin bright edge — makes it read as a screen, not a hole
+    // two-tone edge — reads as a real device bezel catching light
     g.save();
     roundRect(g, dx, dy, dw, dh, radius);
-    g.strokeStyle = A; g.globalAlpha = 0.5; g.lineWidth = Math.max(1.5, W * 0.003);
-    g.stroke(); g.restore();
+    const eg = g.createLinearGradient(dx, dy, dx + dw, dy + dh);
+    eg.addColorStop(0, o.A); eg.addColorStop(1, o.B);
+    g.strokeStyle = eg; g.globalAlpha = 0.6; g.lineWidth = Math.max(1.5, W * 0.003);
+    g.stroke();
+    g.globalAlpha = 0.22; g.strokeStyle = '#fff'; g.lineWidth = Math.max(1, W * 0.0012);
+    g.stroke();
+    g.restore();
   };
 
   if (shot.kind === 'card' || (!landscape && shot.kind !== 'punch')) {
@@ -258,6 +285,16 @@ export function drawShot(o: DrawOpts) {
     const sy = clamp(vh * 0.46 - sh / 2, 0, Math.max(0, vh - sh));
     const cw = W * 0.94, ch = Math.min(zoneH * 1.22, cw * (sh / sw));
     drawCrop(sx, sy, sw, Math.min(sh, vh - sy), (W - cw) / 2, zoneY + (zoneH - ch) / 2, cw, ch, W * 0.035);
+  } else if (shot.kind === 'tilt') {
+    // the card set on a slight angle and easing back to level — a designer move,
+    // and it stops every shot from being another dead-flat rectangle
+    const cw = Math.min(W * 0.9, zoneH * aspect), ch = cw / aspect;
+    const dx = (W - cw) / 2, dy = zoneY + (zoneH - ch) / 2;
+    const ang = (1 - easeIO(p)) * 0.055 * (shot.scene % 2 ? -1 : 1);
+    g.save();
+    g.translate(W / 2, dy + ch / 2); g.rotate(ang); g.translate(-W / 2, -(dy + ch / 2));
+    drawCrop(0, 0, vw, vh, dx, dy, cw, ch, W * 0.035);
+    g.restore();
   } else {
     // split: two different parts of the screen stacked — busy, editorial look
     const cw = W * 0.94, ch = zoneH * 0.47, gap = zoneH * 0.06;
@@ -267,33 +304,8 @@ export function drawShot(o: DrawOpts) {
   }
 
   // transition treatment on the first moments of a cut
-  const tIn = 0.26;
-  if (local < tIn && shot.trans !== 'cut') {
-    const k = 1 - local / tIn;
-    if (shot.trans === 'flash') { g.fillStyle = `rgba(255,255,255,${k * 0.5})`; g.fillRect(0, 0, W, H); }
-    else if (shot.trans === 'whip') {
-      // motion-blur streak: a few offset ghosts of the frame
-      g.save(); g.globalAlpha = k * 0.35; g.globalCompositeOperation = 'lighter';
-      for (let i = 1; i <= 3; i++) {
-        try { g.drawImage(o.g.canvas, -k * i * W * 0.06, 0); } catch {}
-      }
-      g.restore();
-    } else if (shot.trans === 'glitch') {
-      g.save(); g.globalAlpha = k * 0.55; g.globalCompositeOperation = 'screen';
-      try {
-        g.drawImage(o.g.canvas, -k * 14, 0);
-        g.drawImage(o.g.canvas, k * 14, 0);
-      } catch {}
-      g.restore();
-      for (let i = 0; i < 5; i++) {
-        const sy = Math.random() * H, sh = 6 + Math.random() * 22;
-        try { g.drawImage(o.g.canvas, 0, sy, W, sh, (Math.random() - 0.5) * k * 70, sy, W, sh); } catch {}
-      }
-    } else if (shot.trans === 'slide') {
-      g.fillStyle = A; g.globalAlpha = k * 0.9;
-      g.fillRect(0, 0, W * k, H); g.globalAlpha = 1;
-    }
-  }
+  const tIn = 0.28;
+  if (local < tIn) transition(g, g.canvas, W, H, shot.trans, 1 - local / tIn, A, o.B);
 }
 
 /** Kinetic headline + sub, sitting under the footage card. */
@@ -302,44 +314,18 @@ export function drawText(
   sc: Scene, local: number, A: string, B: string
 ) {
 
-  const words = sc.headline.split(' ').filter(Boolean);
-  const baseSize = W * 0.108;
-  let fs = baseSize;
-  g.font = `900 ${fs}px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif`;
-  while (g.measureText(sc.headline).width > W * 0.88 && fs > W * 0.05) {
-    fs -= W * 0.004;
-    g.font = `900 ${fs}px ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif`;
-  }
-  const lineY = H * 0.74;
-  g.textAlign = 'center';
-  const widths = words.map(w => g.measureText(w + ' ').width);
-  const total = widths.reduce((a, b) => a + b, 0);
-  let cx = W / 2 - total / 2;
-  words.forEach((w, i) => {
-    const app = clamp((local - i * 0.06) / 0.3, 0, 1);
-    const e = ease(app);
-    g.save();
-    g.globalAlpha = e;
-    g.translate(cx + widths[i] / 2, lineY + (1 - e) * fs * 0.42);
-    g.scale(0.94 + e * 0.06, 0.94 + e * 0.06);
-    g.fillStyle = '#fff';
-    glowText(g, w, 0, 0, A, e);
-    g.restore();
-    cx += widths[i];
-  });
+  // Lay the headline out properly (wraps to at most 3 lines, shrinking to fit)
+  // then reveal it word by word from behind its own baseline.
+  const blk = layoutHeadline(g, sc.headline, W * 0.86, W * 0.105, 3);
+  const bottom = H * 0.775;
+  const top = bottom - (blk.lines.length - 1) * blk.lineH - blk.fs * 0.78;
 
-  if (sc.sub) {
-    const sa = clamp((local - 0.3) / 0.36, 0, 1);
-    g.globalAlpha = ease(sa);
-    g.font = `600 ${W * 0.04}px ui-sans-serif,system-ui,sans-serif`;
-    g.fillStyle = B;
-    g.fillText(sc.sub, W / 2, lineY + fs * 0.85);
-    g.globalAlpha = 1;
-  }
+  // kicker sits ABOVE the headline — small, wide-tracked, accent coloured
+  if (sc.sub) drawKicker(g, sc.sub.slice(0, 42), W / 2, top - W * 0.035, W * 0.027, local, B, 0.26);
 
-  const uw = clamp(local / 0.5, 0, 1) * W * 0.26;
-  g.fillStyle = A; g.globalAlpha = 0.9;
-  g.fillRect(W / 2 - uw / 2, lineY + fs * (sc.sub ? 1.25 : 0.5), uw, Math.max(3, W * 0.006));
+  drawKinetic(g, blk, W / 2, bottom, local, A, B, 0.05);
+
+  drawRule(g, W / 2, bottom + blk.fs * 0.42, W * 0.24, Math.max(3, W * 0.006), local, A, B, 0.3);
   g.globalAlpha = 1;
 }
 
