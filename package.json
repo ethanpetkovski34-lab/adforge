@@ -22,5 +22,7 @@
     "electron": "^33.0.0",
     "electron-builder": "^25.1.8"
   },
-  "main": "electron.js"
+  "main": "electron.js",
+  "description": "AI ad maker — turns your product into a cinematic vertical ad.",
+  "author": "Ethan Petkovski"
 }
