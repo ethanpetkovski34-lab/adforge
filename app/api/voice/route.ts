@@ -37,7 +37,17 @@ export async function POST(req: Request) {
     const voice = style === 'hype' ? 'ash' : style === 'warm' ? 'nova' : style === 'premium' ? 'sage' : 'onyx';
     // Punctuation shapes the performance more than any instruction does, so give
     // the model something to breathe with.
-    const speak = String(text).trim().slice(0, 500).replace(/\s*—\s*/g, '… ');
+    let speak = String(text).trim().slice(0, 500)
+      .replace(/\s*[—–]\s*/g, '… ')          // dashes become a real breath
+      .replace(/\s*;\s*/g, '… ')
+      .replace(/\bdo not\b/gi, "don't").replace(/\bit is\b/gi, "it's")
+      .replace(/\byou are\b/gi, "you're").replace(/\bthat is\b/gi, "that's")
+      .replace(/\bcannot\b/gi, "can't").replace(/\bwill not\b/gi, "won't")
+      .replace(/\s+/g, ' ')
+      .trim();
+    // A line with no end punctuation gets read flat and trails off; give it a
+    // full stop so the model lands the ending like a person would.
+    if (!/[.!?…]$/.test(speak)) speak += '.';
 
     const tts = async (model: string, opts: any) => {
       const body: any = { model, voice: opts.voice, input: speak, response_format: 'mp3' };

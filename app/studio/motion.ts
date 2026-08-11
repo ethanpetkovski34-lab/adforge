@@ -359,6 +359,21 @@ export function chroma(g: CanvasRenderingContext2D, cv: HTMLCanvasElement, W: nu
   g.restore();
 }
 
+/** Build every cached canvas up front. Baking these lazily during the first
+ *  frames of a render drops frames exactly where a viewer notices them most —
+ *  the opening second. */
+export function prewarm(W: number, H: number, A: string, B: string) {
+  try {
+    dotSprite(A); dotSprite(B);
+    gradeCv(W, H, A, B); vignetteCv(W, H);
+    rays(A); centreGlow(W, H, A);
+    const bw = Math.max(24, Math.round(W / 9)), bh = Math.max(24, Math.round(H / 9));
+    if (!_bl || _bl.width !== bw || _bl.height !== bh) {
+      _bl = document.createElement('canvas'); _bl.width = bw; _bl.height = bh;
+    }
+  } catch {}
+}
+
 /* ── SURFACES ────────────────────────────────────────────────────────────── */
 
 export function roundPath(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { CHECKOUT_URL, isLive } from "../checkout";
 import { saveAd, listAds, deleteAd, clearAds, makeThumb, prettySize, prettyDate, type SavedAd } from "./library";
 import { analyseFootage, buildEDL, drawShot, drawText, drawMotionOnly, drawFeatureAnim, pickAnim, lightLeak, letterbox, brandBar, type Script as EScript } from "./engine";
-import { camera, applyCam, particles, bloom, grade, chroma, hud, drawEndCardPro } from "./motion";
+import { camera, applyCam, particles, bloom, grade, chroma, hud, drawEndCardPro, prewarm } from "./motion";
 
 type Script = EScript;
 
@@ -209,7 +209,13 @@ export default function Studio() {
     setBusy("Recording narration…");
     const ac = new AudioContext();
     let voDone = 0;
-    const bufs: (AudioBuffer | null)[] = await Promise.all(
+    // Narration is kept as <audio> elements, NOT decoded AudioBuffers.
+    // AudioBufferSourceNode.playbackRate resamples — at the 1.1x default it
+    // pitched the entire voiceover up about 1.6 semitones, which is exactly why
+    // the finished ad never sounded like the preview you audition on the script
+    // step (an <audio> element time-stretches with the pitch preserved).
+    const voUrls: string[] = [];
+    const lines: (HTMLAudioElement | null)[] = await Promise.all(
       script.scenes.map(async (sc) => {
         try {
           const r = await fetch("/api/voice", {
@@ -217,8 +223,19 @@ export default function Studio() {
             body: JSON.stringify({ text: sc.vo, style: voice, pro }),
           });
           if (!r.ok) return null;
-          const buf = await ac.decodeAudioData(await r.arrayBuffer()).catch(() => null);
-          return buf;
+          const url = URL.createObjectURL(await r.blob());
+          voUrls.push(url);
+          const el = new Audio();
+          (el as any).preservesPitch = true;
+          (el as any).mozPreservesPitch = true;
+          (el as any).webkitPreservesPitch = true;
+          el.preload = "auto";
+          el.src = url;
+          el.playbackRate = voSpeed;      // tempo only — pitch stays put
+          await new Promise<void>(res => {
+            el.oncanplaythrough = () => res(); el.onerror = () => res(); setTimeout(res, 8000);
+          });
+          return el;
         } catch { return null; }
         finally {
           voDone++;
@@ -226,7 +243,7 @@ export default function Studio() {
         }
       })
     );
-    if (bufs.every(b => !b)) {
+    if (lines.every(l => !l)) {
       // no voice at all — tell them rather than silently shipping a mute ad
       setErr("Narration failed — your ad will render without a voiceover.");
     }
@@ -275,7 +292,17 @@ export default function Studio() {
 
     // --- mix audio + canvas into one recording ---
     const dest = ac.createMediaStreamDestination();
-    const vStream = (cv as any).captureStream(30) as MediaStream;
+    // Hand the recorder EXACTLY the frames we draw, instead of letting it sample
+    // the canvas on its own 30Hz clock. Two clocks that don't line up beat
+    // against each other and duplicate/drop frames — which is judder you can see
+    // even when the average frame rate looks fine.
+    let vStream = (cv as any).captureStream(0) as MediaStream;
+    let vTrack = vStream.getVideoTracks()[0] as any;
+    const manualFrames = !!vTrack && typeof vTrack.requestFrame === "function";
+    if (!manualFrames) {
+      vStream = (cv as any).captureStream(30) as MediaStream;
+      vTrack = vStream.getVideoTracks()[0];
+    }
     const mixed = new MediaStream([...vStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
     const mime = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find(m => MediaRecorder.isTypeSupported(m)) || "";
     const rec = new MediaRecorder(mixed, mime ? { mimeType: mime, videoBitsPerSecond: pro ? 6_500_000 : 4_000_000 } : undefined);
@@ -290,18 +317,26 @@ export default function Studio() {
     script.scenes.forEach(sc => { starts.push(acc); acc += sc.t; });
     const TOTAL = acc + 2.6;
 
+    // route each narration line into the recording
+    lines.forEach(el => {
+      if (!el) return;
+      try { ac.createMediaElementSource(el).connect(dest); } catch {}
+    });
+
+    // Build every cached gradient/sprite BEFORE recording starts, so the first
+    // second of the ad isn't paying for them.
+    prewarm(W, H, A, B);
+
     const done = new Promise<void>(res => { rec.onstop = () => res(); });
     rec.start();
     try { if (ac.state === "suspended") await Promise.race([ac.resume(), new Promise(r => setTimeout(r, 1200))]); } catch {}
-    bufs.forEach((b, i) => {
-      if (!b) return;
-      const src = ac.createBufferSource(); src.buffer = b;
-      src.playbackRate.value = voSpeed;   // keeps the natural voice, just paced
-      src.connect(dest); src.start(ac.currentTime + starts[i] + 0.1);
-    });
 
     let shotIdx = -1;
     let frameNo = 0;
+    const spoken = lines.map(() => false);
+    const gaps: number[] = [];
+    let lastFrameAt = 0;
+    let lastPct = -2;
     const t0 = performance.now();
 
     let clock: ScriptProcessorNode | null = null;
@@ -401,10 +436,29 @@ export default function Studio() {
         if (stopped) return;
         const el = (performance.now() - t0) / 1000;
         if (el >= TOTAL) { stopped = true; finish(); return; }
+
+        // start each narration line on time — checked every tick, before the
+        // draw throttle, so speech never waits on a frame
+        for (let i = 0; i < lines.length; i++) {
+          if (!spoken[i] && lines[i] && el >= starts[i]) {
+            spoken[i] = true;
+            lines[i]!.play().catch(() => {});
+          }
+        }
+
         if (el - lastEl < STEP * 0.85) return;   // don't draw faster than we capture
         lastEl = el;
-        setProgress(Math.min(100, Math.round((el / TOTAL) * 100)));
+
+        // Updating React state 30x/sec re-renders the whole studio and steals
+        // main-thread time from the render itself. Every 2% is plenty.
+        const pct = Math.min(100, Math.round((el / TOTAL) * 100));
+        if (pct - lastPct >= 2) { lastPct = pct; setProgress(pct); }
+
+        const now = performance.now();
+        if (lastFrameAt) gaps.push(now - lastFrameAt);
+        lastFrameAt = now;
         frame(el);
+        if (manualFrames) { try { vTrack.requestFrame(); } catch {} }
       };
 
       // Visible tab: rAF, aligned to the display.
@@ -428,13 +482,22 @@ export default function Studio() {
     // Render health, so a future slowdown shows up as a number instead of
     // someone squinting at the video going "is this laggy?"
     const fps = frameNo / ((performance.now() - t0) / 1000);
-    console.log(`AdForge: ${frameNo} frames in ${TOTAL.toFixed(1)}s = ${fps.toFixed(1)} fps (30 = perfect)`);
-    (window as any).__adfFps = +fps.toFixed(1);
+    // Average fps hides judder — a run that averages 30 but stalls for 120ms
+    // twice looks broken. Frame PACING is what you actually see.
+    const sorted = gaps.slice().sort((a, b) => a - b);
+    const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))] || 0;
+    const jank = gaps.filter(g => g > 50).length;
+    const health = { fps: +fps.toFixed(1), p50: +at(0.5).toFixed(1), p95: +at(0.95).toFixed(1), worst: +at(1).toFixed(1), jank };
+    console.log(`AdForge: ${frameNo} frames, ${health.fps} fps · gaps p50 ${health.p50}ms p95 ${health.p95}ms worst ${health.worst}ms · ${jank} stalls >50ms`);
+    (window as any).__adfFps = health.fps;
+    (window as any).__adfHealth = health;
 
     try { rec.stop(); } catch {}
     await done;
     try { vid?.pause(); } catch {}
+    lines.forEach(el => { try { el?.pause(); } catch {} });
     try { await ac.close(); } catch {}
+    voUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
     const finalBlob = new Blob(out, { type: "video/webm" });
     setOutBlob(finalBlob);
     setOutUrl(URL.createObjectURL(finalBlob));

@@ -20,7 +20,14 @@ RULES:
 - Scene 1 is the HOOK: name the viewer's problem or a bold claim. Never start with the product name.
 - Middle scenes each show ONE benefit — concrete, not corporate. No "revolutionize", "seamless", "empower", "unlock the power".
 - Final scene is the payoff + CTA.
-- Voiceover must sound like a confident human talking, not a brochure. Short sentences.
+- VOICEOVER IS SPEECH, NOT COPY. Write it the way a person actually talks out loud:
+  * Always use contractions — "you're", "it's", "doesn't", "won't". Never the expanded form.
+  * Talk TO the viewer as "you". Never describe the product in the third person like a press release.
+  * Vary the length. A long-ish sentence, then a really short one. That rhythm is what makes it sound human.
+  * Starting a sentence with "And", "But" or "So" is good. Sentence fragments are good.
+  * Never read the on-screen headline back word for word — the voice should add something the text doesn't say.
+  * Banned entirely: "revolutionary", "seamless", "empower", "unlock", "elevate", "game-changing", "solution", "leverage", "in today's world".
+  * Say it out loud in your head first. If a real person wouldn't say it to a friend, rewrite it.
 - Headlines are punchy fragments, not sentences. No full stops.
 - Match the requested vibe exactly.
 - If real features are supplied, build the middle scenes from THOSE — they are true and specific.
