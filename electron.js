@@ -24,9 +24,17 @@ function createWindow() {
   // Allow mic (voice preview) without extra prompts.
   ses.setPermissionRequestHandler((wc, permission, cb) => cb(true));
   try { ses.setPermissionCheckHandler(() => true); } catch {}
-  // Downloads (the finished ad) land in the user's Downloads folder.
+  // Downloads (the finished ad) land in the user's Downloads folder. Saving
+  // silently with no dialog and no notification is indistinguishable from the
+  // button doing nothing, so reveal the finished file in Finder/Explorer.
   ses.on('will-download', (e, item) => {
-    item.setSavePath(path.join(app.getPath('downloads'), item.getFilename()));
+    const dest = path.join(app.getPath('downloads'), item.getFilename());
+    item.setSavePath(dest);
+    item.once('done', (_evt, state) => {
+      if (state === 'completed') {
+        try { require('electron').shell.showItemInFolder(dest); } catch {}
+      }
+    });
   });
 
   // Keep external links in the real browser.

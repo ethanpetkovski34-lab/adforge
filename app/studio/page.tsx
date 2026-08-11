@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { CHECKOUT_URL, isLive } from "../checkout";
-import { saveAd, listAds, deleteAd, clearAds, makeThumb, prettySize, prettyDate, type SavedAd } from "./library";
+import { saveAd, listAds, deleteAd, clearAds, makeThumb, prettySize, prettyDate, fileName, extFor, type SavedAd } from "./library";
 import { analyseFootage, buildEDL, drawShot, drawText, drawMotionOnly, drawFeatureAnim, pickAnim, lightLeak, letterbox, brandBar, type Script as EScript } from "./engine";
 import { camera, applyCam, particles, bloom, grade, chroma, hud, drawEndCardPro, prewarm } from "./motion";
 
@@ -38,6 +38,8 @@ export default function Studio() {
   const [progress, setProgress] = useState(0);
   const [outUrl, setOutUrl] = useState("");
   const [outBlob, setOutBlob] = useState<Blob | null>(null);
+  const [outMime, setOutMime] = useState("video/mp4");
+  const [saved, setSaved] = useState("");
   const [library, setLibrary] = useState<SavedAd[]>([]);
   const [showLib, setShowLib] = useState(false);
   const [playing, setPlaying] = useState<string>("");
@@ -126,38 +128,55 @@ export default function Studio() {
     setClipUrl(u => { if (u) URL.revokeObjectURL(u); return URL.createObjectURL(f); });
   }
 
-  // Downloading a blob via <a href> silently does nothing in the desktop app and
-  // fails quietly on an empty render, so do it explicitly and say what happened.
-  function downloadAd() {
-    if (!outBlob || outBlob.size < 1000) {
-      setErr("There's no finished video to download — forge the ad again.");
+  // A bare <a download> click reports success whether or not a file ever lands —
+  // which is why this looked fixed when it wasn't. Use a real save dialog where
+  // the browser has one, fall back to the anchor, and always say what happened.
+  async function saveBlob(blob: Blob, name: string, mime: string) {
+    setSaved("");
+    if (!blob || blob.size < 1000) {
+      setErr("There's no finished video to save — forge the ad again.");
       return;
     }
-    const name = `${(product || "ad").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "ad"}-adforge.webm`;
+    const picker = (window as any).showSaveFilePicker;
+    if (typeof picker === "function") {
+      try {
+        const ext = name.split(".").pop() || "mp4";
+        const handle = await picker({
+          suggestedName: name,
+          types: [{ description: "Video", accept: { [mime]: ["." + ext] } }],
+        });
+        const w = await handle.createWritable();
+        await w.write(blob);
+        await w.close();
+        setErr(""); setSaved(`Saved ${name}`);
+        return;
+      } catch (e: any) {
+        // user hit Cancel — that's not an error, just stop
+        if (e && (e.name === "AbortError" || e.name === "NotAllowedError")) return;
+        // anything else: fall through to the anchor
+      }
+    }
     try {
-      const url = URL.createObjectURL(outBlob);
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url; a.download = name; a.rel = "noopener";
       document.body.appendChild(a);
       a.click();
-      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 4000);
-      setErr("");
+      setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 10000);
+      setErr(""); setSaved(`Sent ${name} to your Downloads folder`);
     } catch {
-      // last resort: open it so they can right-click → Save
-      try { window.open(outUrl, "_blank"); } catch {}
-      setErr("If the download didn't start, right-click the video above and choose Save Video As.");
+      try { window.open(URL.createObjectURL(blob), "_blank"); } catch {}
+      setErr("Couldn't save automatically — right-click the video and choose Save Video As.");
     }
   }
 
+  function downloadAd() {
+    if (!outBlob) { setErr("There's no finished video to save — forge the ad again."); return; }
+    saveBlob(outBlob, fileName(product, outMime), outMime || "video/mp4");
+  }
+
   function downloadSaved(ad: SavedAd) {
-    try {
-      const url = URL.createObjectURL(ad.blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${ad.product.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "ad"}-adforge.webm`;
-      document.body.appendChild(a); a.click();
-      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 4000);
-    } catch {}
+    saveBlob(ad.blob, fileName(ad.product, ad.mime || ad.blob.type), ad.mime || ad.blob.type || "video/webm");
   }
   async function removeAd(ad: SavedAd) {
     if (!confirm(`Delete this ad for "${ad.product}"? This can't be undone.`)) return;
@@ -304,7 +323,18 @@ export default function Studio() {
       vTrack = vStream.getVideoTracks()[0];
     }
     const mixed = new MediaStream([...vStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
-    const mime = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find(m => MediaRecorder.isTypeSupported(m)) || "";
+    // MP4/H.264 FIRST. A .webm won't open in QuickTime and is rejected outright
+    // by TikTok, Reels and Shorts — so a "successful" download used to hand you
+    // a file you couldn't actually use. webm stays as the fallback for browsers
+    // whose MediaRecorder can't mux mp4.
+    const mime = [
+      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+      "video/mp4;codecs=avc1,mp4a.40.2",
+      "video/mp4",
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm",
+    ].find(m => MediaRecorder.isTypeSupported(m)) || "";
     const rec = new MediaRecorder(mixed, mime ? { mimeType: mime, videoBitsPerSecond: pro ? 6_500_000 : 4_000_000 } : undefined);
     const out: Blob[] = [];
     rec.ondataavailable = e => { if (e.data.size) out.push(e.data); };
@@ -498,8 +528,11 @@ export default function Studio() {
     lines.forEach(el => { try { el?.pause(); } catch {} });
     try { await ac.close(); } catch {}
     voUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
-    const finalBlob = new Blob(out, { type: "video/webm" });
+    // the recorder is the authority on what it actually produced
+    const outMime = (rec.mimeType || mime || "video/webm").split(";")[0];
+    const finalBlob = new Blob(out, { type: outMime });
     setOutBlob(finalBlob);
+    setOutMime(outMime);
     setOutUrl(URL.createObjectURL(finalBlob));
     // keep it — every ad you make lands in the library automatically
     if (finalBlob.size > 20000) {
@@ -512,6 +545,7 @@ export default function Studio() {
         size: finalBlob.size,
         thumb: makeThumb(cv),
         blob: finalBlob,
+        mime: outMime,
       };
       await saveAd(ad);
       listAds().then(setLibrary);
@@ -573,6 +607,9 @@ export default function Studio() {
             <p style={{ color: "#8ea5d4", margin: "0 0 18px", fontSize: 13.5 }}>
               Every ad you make is saved here on this device. Nothing is uploaded anywhere.
             </p>
+            {saved && (
+              <div style={{ margin: "0 0 14px", padding: "10px 12px", borderRadius: 10, background: "rgba(42,238,170,.1)", border: "1px solid #2aeeaa44", fontSize: 13, color: "#2aeeaa", fontWeight: 700 }}>✓ {saved}</div>
+            )}
 
             {library.length === 0 ? (
               <div style={{ textAlign: "center", padding: "34px 10px", color: "#5d78ad" }}>
@@ -794,15 +831,22 @@ export default function Studio() {
         {!showLib && step === 4 && (
           <div style={S.card}>
             <h2 style={{ margin: "0 0 6px", fontSize: 24 }}>🔥 Your ad is ready</h2>
-            <p style={{ color: "#8ea5d4", margin: "0 0 18px", fontSize: 14.5 }}>Download it and post it. WebM plays everywhere and uploads straight to TikTok, Reels and Shorts.</p>
+            <p style={{ color: "#8ea5d4", margin: "0 0 18px", fontSize: 14.5 }}>
+              {extFor(outMime) === "mp4"
+                ? "Download it and post it. It's an MP4 — opens in QuickTime and uploads straight to TikTok, Reels and Shorts."
+                : "Download it and post it. Your browser could only record WebM, which TikTok and Reels won't accept — open AdForge in Chrome to get an MP4."}
+            </p>
             {outUrl && <video src={outUrl} controls autoPlay loop style={{ width: "100%", maxWidth: 320, display: "block", margin: "0 auto 18px", borderRadius: 16, border: "1px solid #2af0ff44", background: "#000" }} />}
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
               <button onClick={downloadAd} style={{ ...S.btn, ...S.prime }}>
-                ⬇ Download my ad{outBlob ? ` · ${(outBlob.size / 1048576).toFixed(1)} MB` : ""}
+                ⬇ Download my ad{outBlob ? ` · ${extFor(outMime).toUpperCase()} · ${(outBlob.size / 1048576).toFixed(1)} MB` : ""}
               </button>
-              <button onClick={() => { setStep(3); setOutUrl(""); setOutBlob(null); }} style={{ ...S.btn, ...S.ghost }}>↻ Re-forge</button>
-              <button onClick={() => { setStep(1); setScript(null); setOutUrl(""); setOutBlob(null); setClipUrl(""); }} style={{ ...S.btn, ...S.ghost }}>+ New ad</button>
+              <button onClick={() => { setStep(3); setOutUrl(""); setOutBlob(null); setSaved(""); }} style={{ ...S.btn, ...S.ghost }}>↻ Re-forge</button>
+              <button onClick={() => { setStep(1); setScript(null); setOutUrl(""); setOutBlob(null); setClipUrl(""); setSaved(""); }} style={{ ...S.btn, ...S.ghost }}>+ New ad</button>
             </div>
+            {saved && (
+              <div style={{ marginTop: 14, textAlign: "center", fontSize: 13.5, color: "#2aeeaa", fontWeight: 700 }}>✓ {saved}</div>
+            )}
             {!pro && (
               <div style={{ marginTop: 22, padding: 16, borderRadius: 14, background: "rgba(42,238,170,.07)", border: "1px solid #2aeeaa33", textAlign: "center" }}>
                 <div style={{ fontWeight: 800, marginBottom: 5 }}>Lose the watermark?</div>

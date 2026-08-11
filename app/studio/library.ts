@@ -10,7 +10,18 @@ export type SavedAd = {
   size: number;         // bytes
   thumb: string;        // small jpeg data-url for the grid
   blob: Blob;           // the actual video
+  mime?: string;        // what it was recorded as — decides the file extension
 };
+
+/** mp4 opens everywhere and uploads to TikTok/Reels/Shorts; webm does neither,
+ *  so the extension has to follow what was actually recorded. */
+export const extFor = (mime?: string) =>
+  (mime || '').includes('mp4') ? 'mp4' : 'webm';
+
+export function fileName(product: string, mime?: string) {
+  const stem = (product || 'ad').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'ad';
+  return `${stem}-adforge.${extFor(mime)}`;
+}
 
 const DB = 'adforge';
 const STORE = 'ads';
