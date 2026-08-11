@@ -4,11 +4,14 @@ import { CHECKOUT_URL, isLive } from "./checkout";
 
 // Desktop builds — GitHub Releases. Until a real release exists these point at
 // the releases page, which is honest rather than a dead download link.
+// These filenames deliberately carry NO version number — build.json sets
+// artifactName to match. A versioned filename here 404s every download button
+// the moment a new release ships.
 const R = "https://github.com/ethanpetkovski34-lab/adforge/releases/latest/download";
 const DOWNLOAD = {
-  mac: `${R}/AdForge-1.0.0-arm64.dmg`,
-  win: `${R}/AdForge.Setup.1.0.0.exe`,
-  linux: `${R}/AdForge-1.0.0.AppImage`,
+  mac: `${R}/AdForge-mac-arm64.dmg`,
+  win: `${R}/AdForge-win-setup.exe`,
+  linux: `${R}/AdForge-linux.AppImage`,
   all: "https://github.com/ethanpetkovski34-lab/adforge/releases/latest",
 };
 

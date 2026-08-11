@@ -13,8 +13,10 @@
     "package.json",
     "build/icon.png"
   ],
+  "//artifactName": "No ${version} in the filenames on purpose — the website links to /releases/latest/download/<file>, so a versioned name breaks every download button the moment we ship a new release.",
   "mac": {
     "category": "public.app-category.video",
+    "artifactName": "AdForge-mac-${arch}.${ext}",
     "target": [
       "dmg"
     ],
@@ -27,12 +29,14 @@
     "icon": "build/icon.png"
   },
   "win": {
+    "artifactName": "AdForge-win-setup.${ext}",
     "target": [
       "nsis"
     ],
     "icon": "build/icon.png"
   },
   "linux": {
+    "artifactName": "AdForge-linux.${ext}",
     "target": [
       "AppImage"
     ],
