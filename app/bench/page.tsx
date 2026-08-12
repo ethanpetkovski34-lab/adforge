@@ -7,6 +7,8 @@ import { notFound } from "next/navigation";
 import { buildEDL, drawShot, drawText, drawMotionOnly, drawFeatureAnim, pickAnim, lightLeak, letterbox, brandBar, type Script } from "../studio/engine";
 import { camera, applyCam, particles, bloom, grade, chroma, hud, drawEndCardPro } from "../studio/motion";
 import { makeEncoder } from "../studio/encode";
+import { BACKDROPS, drawBackdrop, backdropInk, isLightBackdrop } from "../studio/backdrops";
+import { setInk, setTypeStyle, layoutHeadline, drawKinetic, drawKicker, drawRule } from "../studio/motion";
 
 const SCRIPT: Script = {
   hook: "Your workday just got 3x faster",
@@ -30,6 +32,7 @@ export default function Bench() {
 
   useEffect(() => {
     if (isProd) return;
+    (window as any).__bdmod = { drawBackdrop, BACKDROPS };
     (window as any).runBench = (frames = 240, withFootage = true, F: Record<string, boolean> = {}) => {
       const on = (k: string) => F[k] !== false;
       const W = 1080, H = 1920;
@@ -117,6 +120,32 @@ export default function Bench() {
       sx.fillStyle = "#000"; sx.fillRect(0, 0, s.width, s.height);
       times.forEach((t, i) => { one(t); sx.drawImage(src, i * cw, 0, cw, ch); });
       return `${cols} frames @ ${times.join(", ")}s`;
+    };
+
+    // Contact sheet of every backdrop with real type on top, so the eight
+    // options can be compared at a glance instead of rendering eight ads.
+    (window as any).looks = (typeStyle = "impact") => {
+      const cw = 260, ch = 462;
+      const s = stripRef.current!;
+      s.width = cw * 4; s.height = ch * 2;
+      const x = s.getContext("2d")!;
+      BACKDROPS.forEach((b, i) => {
+        const ox = (i % 4) * cw, oy = Math.floor(i / 4) * ch;
+        const c = document.createElement("canvas"); c.width = cw; c.height = ch;
+        const g = c.getContext("2d", { alpha: false })!;
+        const A = "#7fe3ff", B = "#ffd24a";
+        drawBackdrop(b.id, g, cw, ch, 3.4, A, B);
+        const th = backdropInk(b.id);
+        setTypeStyle(typeStyle as any);
+        setInk(th.ink, th.dim, isLightBackdrop(b.id));
+        const blk = layoutHeadline(g, "Stop wasting hours", cw * 0.86, cw * 0.105, 3);
+        drawKicker(g, b.name, cw / 2, cw * 0.62, cw * 0.03, 3, th.dim, 0);
+        drawKinetic(g, blk, cw / 2, ch * 0.775, 3, A, B, 0.05);
+        drawRule(g, cw / 2, ch * 0.775 + blk.fs * 0.42, cw * 0.24, 3, 3, A, B, 0);
+        x.drawImage(c, ox, oy);
+        x.strokeStyle = "#223"; x.strokeRect(ox, oy, cw, ch);
+      });
+      return "8 backdrops";
     };
 
     // Encoder round-trip: a short render through the real encoder, then walk the

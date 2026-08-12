@@ -1,6 +1,7 @@
 // AdForge render engine.
 // Analyses the footage, decides where to cut, then renders a properly edited ad.
 
+import { drawBackdrop, type BackdropKind } from './backdrops';
 import {
   transition, sheen, snapBeat, BEAT,
   layoutHeadline, drawKinetic, drawKicker, drawRule,
@@ -113,7 +114,12 @@ export async function analyseFootage(
  * each shot uses, how it's framed, and how it cuts in. Busy scenes get more,
  * faster cuts — the way a real edit breathes.
  */
-export function buildEDL(script: Script, an: { times: number[]; scores: number[]; duration: number }, energetic: boolean): Shot[] {
+export function buildEDL(
+  script: Script,
+  an: { times: number[]; scores: number[]; duration: number },
+  energetic: boolean,
+  style?: { transes?: Trans[]; cutScale?: number },
+): Shot[] {
   const shots: Shot[] = [];
   const dur = an.duration || 0;
 
@@ -136,12 +142,16 @@ export function buildEDL(script: Script, an: { times: number[]; scores: number[]
   };
 
   const kinds: Shot['kind'][] = ['card', 'pan', 'punch', 'tilt', 'split', 'punch', 'card', 'tilt'];
-  const transes: Trans[] = ['whip', 'wipe', 'flash', 'bars', 'smear', 'glitch', 'slide', 'whip'];
+  const transes: Trans[] = style?.transes?.length
+    ? style.transes
+    : ['whip', 'wipe', 'flash', 'bars', 'smear', 'glitch', 'slide', 'whip'];
+  const cutScale = style?.cutScale ?? 1;
 
   let clock = 0;
   script.scenes.forEach((sc, i) => {
     // how many cuts inside this scene
-    const cuts = energetic ? (sc.t >= 3.4 ? 3 : 2) : (sc.t >= 4 ? 2 : 1);
+    const base = energetic ? (sc.t >= 3.4 ? 3 : 2) : (sc.t >= 4 ? 2 : 1);
+    const cuts = Math.max(1, Math.round(base * cutScale));
     const each = sc.t / cuts;
     for (let c = 0; c < cuts; c++) {
       // Land every cut on the musical grid. Cuts that fall on the beat are the
@@ -170,6 +180,18 @@ export function buildEDL(script: Script, an: { times: number[]; scores: number[]
     last.dur = Math.max(0.5, clock - last.start);
   }
   return shots;
+}
+
+/**
+ * Where the footage and the type live, per format. A 9:16 TikTok frame has room
+ * for a card up top and big type underneath; a 16:9 frame does not, so there the
+ * footage fills the frame and the type sits over it as a lower third.
+ */
+export function zones(W: number, H: number) {
+  const ar = H / W;
+  if (ar > 1.3) return { zy: H * 0.10, zh: H * 0.52, textBottom: H * 0.775, headFs: W * 0.105, maxLines: 3, overlay: false };
+  if (ar > 0.92) return { zy: H * 0.05, zh: H * 0.50, textBottom: H * 0.86, headFs: W * 0.082, maxLines: 2, overlay: false };
+  return { zy: 0, zh: H, textBottom: H * 0.88, headFs: W * 0.058, maxLines: 2, overlay: true };
 }
 
 type DrawOpts = {
@@ -203,17 +225,19 @@ export function staticOverlay(W: number, H: number, A: string, B: string) {
 
 /** Blurred, darkened backdrop so the frame is never empty — and never cropped to death. */
 function backdrop({ g, W, H, vid, blurCv, A, B }: DrawOpts) {
-  g.fillStyle = '#05070f'; g.fillRect(0, 0, W, H);   // flat fill: ~40x cheaper than a gradient
+  // NOTE: deliberately does NOT fill opaquely. The chosen backdrop has already
+  // been painted underneath, and blatting over it made the background picker a
+  // no-op for anyone who uploaded footage.
   try {
     const bx = blurCv.getContext('2d')!;
     const vw = vid.videoWidth || 16, vh = vid.videoHeight || 9;
     const s = Math.max(blurCv.width / vw, blurCv.height / vh);
     bx.drawImage(vid, (blurCv.width - vw * s) / 2, (blurCv.height - vh * s) / 2, vw * s, vh * s);
-    g.globalAlpha = 0.55;
+    g.globalAlpha = 0.34;
     g.drawImage(blurCv, 0, 0, W, H);   // upscaling the tiny copy = a cheap, smooth blur
     g.globalAlpha = 1;
   } catch {}
-  g.fillStyle = 'rgba(4,6,15,0.55)'; g.fillRect(0, 0, W, H);
+  g.fillStyle = 'rgba(4,6,15,0.34)'; g.fillRect(0, 0, W, H);
 }
 
 function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -236,8 +260,9 @@ export function drawShot(o: DrawOpts) {
 
   backdrop(o);
 
-  // where the footage sits — upper 62% of frame, text lives underneath
-  const zoneY = H * 0.10, zoneH = H * 0.52;
+  // where the footage sits — depends on the format
+  const Z = zones(W, H);
+  const zoneY = Z.zy, zoneH = Z.zh;
 
   const drawCrop = (sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number, radius: number) => {
     cheapShadow(g, dx, dy, dw, dh, radius, 12);
@@ -316,8 +341,15 @@ export function drawText(
 
   // Lay the headline out properly (wraps to at most 3 lines, shrinking to fit)
   // then reveal it word by word from behind its own baseline.
-  const blk = layoutHeadline(g, sc.headline, W * 0.86, W * 0.105, 3);
-  const bottom = H * 0.775;
+  const Z = zones(W, H);
+  // Wide frames put type over the picture, so it needs a scrim to stay legible.
+  if (Z.overlay) {
+    const sg = g.createLinearGradient(0, H * 0.52, 0, H);
+    sg.addColorStop(0, 'rgba(4,6,15,0)'); sg.addColorStop(1, 'rgba(4,6,15,0.88)');
+    g.fillStyle = sg; g.fillRect(0, H * 0.52, W, H * 0.48);
+  }
+  const blk = layoutHeadline(g, sc.headline, W * 0.86, Z.headFs, Z.maxLines);
+  const bottom = Z.textBottom;
   const top = bottom - (blk.lines.length - 1) * blk.lineH - blk.fs * 0.78;
 
   // kicker sits ABOVE the headline — small, wide-tracked, accent coloured
@@ -364,31 +396,17 @@ export function drawEndCard(
 /** Motion-graphics frame for ads made with no footage at all. */
 export function drawMotionOnly(
   g: CanvasRenderingContext2D, W: number, H: number,
-  sc: Scene, local: number, p: number, A: string, B: string, idx: number, imgs: HTMLImageElement[]
+  sc: Scene, local: number, p: number, A: string, B: string, idx: number, imgs: HTMLImageElement[],
+  bgKind: BackdropKind = 'aurora', t = 0
 ) {
-  const bg = g.createLinearGradient(0, 0, W, H);
-  const shift = Math.sin(p * Math.PI) * 0.1;
-  bg.addColorStop(0, '#04060f');
-  bg.addColorStop(clamp(0.4 + shift, 0.05, 0.95), (idx % 2 ? B : A) + '30');
-  bg.addColorStop(1, '#04060f');
-  g.fillStyle = bg; g.fillRect(0, 0, W, H);
-
-  // drifting light bands
-  g.save(); g.globalCompositeOperation = 'lighter';
-  for (let i = 0; i < 5; i++) {
-    const y = ((i / 5 + p * 0.25 + idx * 0.13) % 1) * H;
-    const lg = g.createLinearGradient(0, y - H * 0.1, 0, y + H * 0.1);
-    lg.addColorStop(0, 'rgba(0,0,0,0)');
-    lg.addColorStop(0.5, (i % 2 ? A : B) + '22');
-    lg.addColorStop(1, 'rgba(0,0,0,0)');
-    g.fillStyle = lg; g.fillRect(0, y - H * 0.1, W, H * 0.2);
-  }
-  g.restore();
+  // The customer's chosen world, not the one gradient every ad used to get.
+  drawBackdrop(bgKind, g, W, H, t, A, B);
 
   // a real image from their site, if we found one
   const img = imgs[idx % Math.max(1, imgs.length)];
   if (img && img.complete && img.naturalWidth) {
-    const zoneY = H * 0.12, zoneH = H * 0.46;
+    const Z0 = zones(W, H);
+    const zoneY = Z0.zy + Z0.zh * 0.04, zoneH = Z0.zh * 0.88;
     const ar = img.naturalWidth / img.naturalHeight;
     let cw = Math.min(W * 0.86, zoneH * ar) * (1 + 0.05 * ease(p));
     let ch = cw / ar;
@@ -453,8 +471,9 @@ export function drawFeatureAnim(
   g: CanvasRenderingContext2D, W: number, H: number,
   kind: AnimKind, local: number, p: number, A: string, B: string
 ) {
+  const Z = zones(W, H);
   const zx = W * 0.08, zw = W * 0.84;
-  const zy = H * 0.11, zh = H * 0.44;
+  const zy = Z.zy + Z.zh * 0.02, zh = Z.zh * 0.86;
   const step = (n: number, delay: number, dur = 0.45) => ease(clamp((local - delay) / dur, 0, 1));
 
   if (kind === 'chat') {

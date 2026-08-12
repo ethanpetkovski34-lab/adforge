@@ -75,6 +75,46 @@ export function applyCam(g: CanvasRenderingContext2D, W: number, H: number, c: C
    solid colour block that wipes in behind it.
    ─────────────────────────────────────────────────────────────────────────── */
 
+/* ── TYPE + INK ──────────────────────────────────────────────────────────────
+   The typeface and the text colour are the two things that most change whether
+   an ad reads as "template" or "art-directed", so both are chosen per ad.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+export type TypeStyle = 'impact' | 'editorial' | 'mono' | 'rounded';
+
+const FACES: Record<TypeStyle, { stack: string; weight: string; track: number; upper: boolean; tight: number }> = {
+  impact: {
+    stack: 'ui-sans-serif,system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif',
+    weight: '900', track: -0.015, upper: false, tight: 1.14,
+  },
+  editorial: {
+    stack: 'Georgia,"Iowan Old Style","Times New Roman",serif',
+    weight: '700', track: -0.005, upper: false, tight: 1.2,
+  },
+  mono: {
+    stack: 'ui-monospace,"SF Mono",Menlo,Consolas,monospace',
+    weight: '700', track: 0.02, upper: true, tight: 1.26,
+  },
+  rounded: {
+    stack: '"Avenir Next","Nunito",ui-rounded,"Segoe UI",system-ui,sans-serif',
+    weight: '800', track: 0, upper: false, tight: 1.16,
+  },
+};
+
+let FACE = FACES.impact;
+export function setTypeStyle(s: TypeStyle) { FACE = FACES[s] || FACES.impact; }
+
+/** Headline font string at a given size. */
+const headFont = (px: number) => `${FACE.weight} ${px}px ${FACE.stack}`;
+const uiFont = (px: number, w = '700') => `${w} ${px}px ${FACE.stack}`;
+const casing = (s: string) => (FACE.upper ? s.toUpperCase() : s);
+
+let INK = '#ffffff';
+let DIM = '#b9cbee';
+let LIGHT = false;
+/** Light backdrops need dark type or the whole frame turns to mush. */
+export function setInk(ink: string, dim: string, light = false) { INK = ink; DIM = dim; LIGHT = light; }
+
 const FONT = 'ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif';
 
 type Line = { words: string[]; xs: number[]; ws: number[]; width: number };
@@ -84,11 +124,11 @@ export type TypeBlock = { lines: Line[]; fs: number; lineH: number; hero: number
 export function layoutHeadline(
   g: CanvasRenderingContext2D, text: string, maxW: number, startFs: number, maxLines = 3
 ): TypeBlock {
-  const raw = (text || '').split(/\s+/).filter(Boolean);
+  const raw = casing(text || '').split(/\s+/).filter(Boolean);
   let fs = startFs;
   let lines: Line[] = [];
   for (let attempt = 0; attempt < 22; attempt++) {
-    g.font = `900 ${fs}px ${FONT}`;
+    g.font = headFont(fs);
     const space = g.measureText(' ').width;
     lines = [];
     let cur: string[] = [], curW = 0;
@@ -107,7 +147,7 @@ export function layoutHeadline(
 
   // Greedy wrapping strands the last word on its own line, which looks like a
   // mistake rather than a decision. Pull one word down to balance it.
-  g.font = `900 ${fs}px ${FONT}`;
+  g.font = headFont(fs);
   {
     const sp = g.measureText(' ').width;
     for (let pass = 0; pass < 2; pass++) {
@@ -122,6 +162,7 @@ export function layoutHeadline(
   }
 
   // measure each word's x within its line (centred)
+  g.font = headFont(fs);
   const space = g.measureText(' ').width;
   for (const l of lines) {
     let x = -l.width / 2;
@@ -140,7 +181,7 @@ export function layoutHeadline(
   n = flat.length;
   if (n <= 2) hero = -1;   // don't highlight when there's barely any text
 
-  return { lines, fs, lineH: fs * 1.14, hero };
+  return { lines, fs, lineH: fs * FACE.tight, hero };
 }
 
 /**
@@ -157,7 +198,7 @@ export function drawKinetic(
   g.save();
   g.textAlign = 'left';
   g.textBaseline = 'alphabetic';
-  g.font = `900 ${fs}px ${FONT}`;
+  g.font = headFont(fs);
   let wi = 0;
   lines.forEach((l, li) => {
     const base = bottom - (lines.length - 1 - li) * lineH;
@@ -191,16 +232,19 @@ export function drawKinetic(
       g.translate(x, base + (1 - e) * fs * 0.98);
       g.globalAlpha = Math.min(1, a * 3);
       if (isHero) {
-        g.fillStyle = '#05070f';
+        g.fillStyle = LIGHT ? '#ffffff' : '#05070f';
         g.fillText(w, 0, 0);
       } else {
-        // cheap glow: offset low-alpha copies (shadowBlur is 10x the cost)
-        g.globalAlpha = Math.min(1, a * 3) * 0.18;
-        g.fillStyle = A;
-        const o = fs * 0.035;
-        g.fillText(w, -o, 0); g.fillText(w, o, 0); g.fillText(w, 0, -o); g.fillText(w, 0, o);
+        // cheap glow: offset low-alpha copies (shadowBlur is 10x the cost).
+        // Skipped on light backdrops, where it just muddies the letterforms.
+        if (!LIGHT) {
+          g.globalAlpha = Math.min(1, a * 3) * 0.18;
+          g.fillStyle = A;
+          const o = fs * 0.035;
+          g.fillText(w, -o, 0); g.fillText(w, o, 0); g.fillText(w, 0, -o); g.fillText(w, 0, o);
+        }
         g.globalAlpha = Math.min(1, a * 3);
-        g.fillStyle = '#fff';
+        g.fillStyle = INK;
         g.fillText(w, 0, 0);
       }
       g.restore();
@@ -218,7 +262,7 @@ export function drawKicker(
   const a = clamp((local - delay) / 0.5, 0, 1);
   if (a <= 0) return;
   g.save();
-  g.font = `700 ${size}px ${FONT}`;
+  g.font = uiFont(size);
   try { (g as any).letterSpacing = `${size * 0.14}px`; } catch {}
   g.textAlign = 'center';
   const t = text.toUpperCase();
@@ -246,7 +290,7 @@ export function drawRule(
   g.save();
   g.fillStyle = grd;
   g.fillRect(cx - w / 2, y, w, thick);
-  if (a < 1) { g.globalAlpha = 1 - a; g.fillStyle = '#fff'; g.fillRect(cx + w / 2 - thick * 2, y, thick * 3, thick); }
+  if (a < 1) { g.globalAlpha = 1 - a; g.fillStyle = INK; g.fillRect(cx + w / 2 - thick * 2, y, thick * 3, thick); }
   g.restore();
 }
 
@@ -434,8 +478,8 @@ export function hud(
 
   // scene counter, bottom left
   g.globalAlpha = 0.34;
-  g.font = `700 ${W * 0.022}px ${FONT}`;
-  g.textAlign = 'left'; g.fillStyle = '#cfe0ff';
+  g.font = uiFont(W * 0.022);
+  g.textAlign = 'left'; g.fillStyle = DIM;
   try { (g as any).letterSpacing = `${W * 0.006}px`; } catch {}
   g.fillText(`${String(idx + 1).padStart(2, '0')} / ${String(total).padStart(2, '0')}`, m, bot + H * 0.032);
   try { (g as any).letterSpacing = '0px'; } catch {}
@@ -468,6 +512,28 @@ export function burst(g: CanvasRenderingContext2D, cx: number, cy: number, R: nu
   }
   g.restore();
 }
+
+/* ── MOTION STYLES ───────────────────────────────────────────────────────────
+   One dial the customer actually understands, driving every knob underneath:
+   how hard the camera moves, how often it cuts, which transitions are in play,
+   and how aggressive the grade is.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+export type MotionStyle = 'kinetic' | 'cinematic' | 'glitch' | 'elegant' | 'bold';
+
+export type MotionPreset = {
+  cam: number; cutScale: number; stagger: number;
+  bloom: number; grade: number; chroma: number; particles: number; hud: boolean;
+  transes: Trans[];
+};
+
+export const MOTION: Record<MotionStyle, MotionPreset> = {
+  kinetic:   { cam: 1.0,  cutScale: 1.0, stagger: 0.050, bloom: 0.26, grade: 0.32, chroma: 1.0, particles: 0.85, hud: true,  transes: ['whip', 'wipe', 'flash', 'bars', 'smear'] },
+  cinematic: { cam: 0.5,  cutScale: 0.6, stagger: 0.075, bloom: 0.34, grade: 0.38, chroma: 0.25, particles: 0.7, hud: false, transes: ['flash', 'smear', 'cut', 'whip'] },
+  glitch:    { cam: 1.25, cutScale: 1.4, stagger: 0.035, bloom: 0.30, grade: 0.30, chroma: 1.8, particles: 1.0,  hud: true,  transes: ['glitch', 'bars', 'whip', 'flash'] },
+  elegant:   { cam: 0.32, cutScale: 0.5, stagger: 0.090, bloom: 0.30, grade: 0.34, chroma: 0.0, particles: 0.45, hud: false, transes: ['cut', 'flash'] },
+  bold:      { cam: 1.15, cutScale: 1.1, stagger: 0.045, bloom: 0.22, grade: 0.28, chroma: 0.8, particles: 0.6,  hud: true,  transes: ['slide', 'wipe', 'whip', 'bars'] },
+};
 
 /* ── TRANSITIONS ─────────────────────────────────────────────────────────────
    k runs 1 → 0 across the first ~0.28s of a shot.
@@ -587,24 +653,28 @@ function centreGlow(W: number, H: number, A: string) {
 export function drawEndCardPro(
   g: CanvasRenderingContext2D, W: number, H: number,
   product: string, cta: string, endline: string, domain: string,
-  p: number, A: string, B: string, t: number
+  p: number, A: string, B: string, t: number,
+  paintBg?: (g: CanvasRenderingContext2D, W: number, H: number, t: number) => void
 ) {
   const local = p * 2.6;   // seconds into the end card
 
-  g.fillStyle = '#04060f'; g.fillRect(0, 0, W, H);
-  g.drawImage(centreGlow(W, H, A), 0, 0);
+  // The pay-off frame stays in the same world as the rest of the ad.
+  if (paintBg) paintBg(g, W, H, t);
+  else { g.fillStyle = '#04060f'; g.fillRect(0, 0, W, H); }
 
-  // slow turning light rays behind everything
-  g.save();
-  g.globalCompositeOperation = 'lighter';
-  g.globalAlpha = 0.55;
-  g.translate(W / 2, H * 0.42);
-  g.rotate(t * 0.06);
-  const R = Math.max(W, H) * 1.5;
-  g.drawImage(rays(A), -R / 2, -R / 2, R, R);
-  g.restore();
-
-  particles(g, W, H, t, A, B, 0.9);
+  if (!LIGHT) {
+    g.drawImage(centreGlow(W, H, A), 0, 0);
+    // slow turning light rays behind everything
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    g.globalAlpha = 0.55;
+    g.translate(W / 2, H * 0.42);
+    g.rotate(t * 0.06);
+    const R = Math.max(W, H) * 1.5;
+    g.drawImage(rays(A), -R / 2, -R / 2, R, R);
+    g.restore();
+    particles(g, W, H, t, A, B, 0.9);
+  }
 
   // product name — same kinetic reveal as the headlines, so it feels of a piece
   const blk = layoutHeadline(g, product || 'Your product', W * 0.84, W * 0.135, 2);
@@ -614,7 +684,7 @@ export function drawEndCardPro(
   drawRule(g, W / 2, H * 0.44 + blk.fs * 0.42, W * 0.3, Math.max(3, W * 0.006), local, A, B, 0.34);
 
   if (endline) {
-    drawKicker(g, endline, W / 2, H * 0.44 + blk.fs * 0.42 + W * 0.075, W * 0.03, local, '#b9cbee', 0.46);
+    drawKicker(g, endline, W / 2, H * 0.44 + blk.fs * 0.42 + W * 0.075, W * 0.03, local, DIM, 0.46);
   }
 
   // CTA pill
@@ -640,8 +710,8 @@ export function drawEndCardPro(
     g.fillStyle = '#04101f';
     g.textAlign = 'center';
     let fs = W * 0.046;
-    g.font = `800 ${fs}px ${FONT}`;
-    while (g.measureText(cta).width > cw * 0.82 && fs > W * 0.026) { fs -= W * 0.002; g.font = `800 ${fs}px ${FONT}`; }
+    g.font = uiFont(fs, '800');
+    while (g.measureText(cta).width > cw * 0.82 && fs > W * 0.026) { fs -= W * 0.002; g.font = uiFont(fs, '800'); }
     g.fillText(cta, W / 2, cy + ch * 0.63);
     g.restore();
   }
@@ -652,9 +722,9 @@ export function drawEndCardPro(
     g.save();
     g.globalAlpha = da * 0.72;
     g.textAlign = 'center';
-    g.font = `600 ${W * 0.03}px ${FONT}`;
+    g.font = uiFont(W * 0.03, '600');
     try { (g as any).letterSpacing = `${W * 0.005}px`; } catch {}
-    g.fillStyle = '#9fb6df';
+    g.fillStyle = DIM;
     g.fillText(domain, W / 2, H * 0.615 + W * 0.135 + W * 0.075);
     try { (g as any).letterSpacing = '0px'; } catch {}
     g.restore();

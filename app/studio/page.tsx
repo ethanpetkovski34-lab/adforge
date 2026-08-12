@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { CHECKOUT_URL, isLive } from "../checkout";
 import { saveAd, listAds, deleteAd, clearAds, makeThumb, prettySize, prettyDate, fileName, extFor, isPhoneReady, type SavedAd } from "./library";
 import { analyseFootage, buildEDL, drawShot, drawText, drawMotionOnly, drawFeatureAnim, pickAnim, lightLeak, letterbox, brandBar, type Script as EScript } from "./engine";
-import { camera, applyCam, particles, bloom, grade, chroma, hud, drawEndCardPro, prewarm } from "./motion";
+import { camera, applyCam, particles, bloom, grade, chroma, hud, drawEndCardPro, prewarm, setTypeStyle, setInk, MOTION, type MotionStyle, type TypeStyle } from "./motion";
+import { BACKDROPS, drawBackdrop, backdropInk, isLightBackdrop, type BackdropKind } from "./backdrops";
 import { makeEncoder } from "./encode";
 
 type Script = EScript;
@@ -16,6 +17,28 @@ const VOICES: [string, string][] = [
   ["premium", "Premium — calm and expensive"],
 ];
 const PRO_CODE = "FORGE-PRO-e7Zk9Qp2";
+
+// The questions that stop every ad looking like the same template.
+const FORMATS: { id: string; name: string; blurb: string; w: number; h: number; pw: number; ph: number }[] = [
+  { id: "9:16", name: "Vertical 9:16", blurb: "TikTok, Reels, Shorts", w: 720, h: 1280, pw: 1080, ph: 1920 },
+  { id: "1:1",  name: "Square 1:1",    blurb: "Feed posts, ads",       w: 900, h: 900,  pw: 1080, ph: 1080 },
+  { id: "16:9", name: "Wide 16:9",     blurb: "YouTube, websites",     w: 1280, h: 720, pw: 1920, ph: 1080 },
+];
+
+const MOTIONS: { id: MotionStyle; name: string; blurb: string }[] = [
+  { id: "kinetic",   name: "Kinetic",   blurb: "Punchy cuts, words snapping in" },
+  { id: "cinematic", name: "Cinematic", blurb: "Slow push, filmic, fewer cuts" },
+  { id: "glitch",    name: "Glitch",    blurb: "Hard, fast, RGB tearing" },
+  { id: "elegant",   name: "Elegant",   blurb: "Calm fades, nothing shakes" },
+  { id: "bold",      name: "Bold",      blurb: "Big slams and colour wipes" },
+];
+
+const TYPES: { id: TypeStyle; name: string; blurb: string }[] = [
+  { id: "impact",    name: "Impact",    blurb: "Heavy sans — loud and modern" },
+  { id: "editorial", name: "Editorial", blurb: "Serif — magazine, premium" },
+  { id: "mono",      name: "Mono",      blurb: "Monospace caps — technical" },
+  { id: "rounded",   name: "Rounded",   blurb: "Soft sans — friendly" },
+];
 
 export default function Studio() {
   const [step, setStep] = useState(1);
@@ -32,6 +55,12 @@ export default function Studio() {
   const [duration, setDuration] = useState(15);
   const [voice, setVoice] = useState("cinematic");
   const [voSpeed, setVoSpeed] = useState(1.1);
+  const [format, setFormat] = useState("9:16");
+  const [bg, setBg] = useState<BackdropKind>("aurora");
+  const [motion, setMotion] = useState<MotionStyle>("kinetic");
+  const [typeStyle, setTypeStyleSel] = useState<TypeStyle>("impact");
+  const [ctaText, setCtaText] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
   const [script, setScript] = useState<Script | null>(null);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
@@ -171,6 +200,24 @@ export default function Studio() {
     }
   }
 
+  /** Their logo, centred above the end-card lock-up. */
+  function drawLogo(g: CanvasRenderingContext2D, W: number, H: number, img: HTMLImageElement, p: number) {
+    const a = Math.min(1, Math.max(0, (p * 2.6 - 0.1) / 0.5));
+    if (a <= 0 || !img.naturalWidth) return;
+    const maxW = W * 0.34, maxH = H * 0.09;
+    const s = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
+    const w = img.naturalWidth * s, h = img.naturalHeight * s;
+    g.save();
+    g.globalAlpha = a;
+    g.drawImage(img, (W - w) / 2, H * 0.22 - h / 2 + (1 - a) * H * 0.02, w, h);
+    g.restore();
+  }
+
+  function onLogo(e: any) {
+    const f = e.target.files?.[0]; if (!f) return;
+    setLogoUrl(u => { if (u) URL.revokeObjectURL(u); return URL.createObjectURL(f); });
+  }
+
   function downloadAd() {
     if (!outBlob) { setErr("There's no finished video to save — forge the ad again."); return; }
     saveBlob(outBlob, fileName(product, outMime), outMime || "video/mp4");
@@ -207,7 +254,13 @@ export default function Studio() {
     const noFootage = !clipUrl;
     setErr(""); setOutUrl(""); setProgress(0);
 
-    const W = pro ? 1080 : 720, H = pro ? 1920 : 1280;
+    const F = FORMATS.find(f => f.id === format) || FORMATS[0];
+    const W = pro ? F.pw : F.w, H = pro ? F.ph : F.h;
+    const M = MOTION[motion] || MOTION.kinetic;
+    const light = isLightBackdrop(bg);
+    const theme = backdropInk(bg);
+    setTypeStyle(typeStyle);
+    setInk(theme.ink, theme.dim, light);
     const cv = canvasRef.current!; cv.width = W; cv.height = H;
     const g = cv.getContext("2d", { alpha: false })!;
     const blurCv = document.createElement("canvas"); blurCv.width = 40; blurCv.height = 71;
@@ -268,6 +321,16 @@ export default function Studio() {
       setErr("Narration failed — your ad will render without a voiceover.");
     }
 
+    // their logo, if they gave us one — it lands on the end card
+    let logoImg: HTMLImageElement | null = null;
+    if (logoUrl) {
+      logoImg = await new Promise<HTMLImageElement | null>(res => {
+        const im = new Image();
+        im.onload = () => res(im); im.onerror = () => res(null);
+        im.src = logoUrl; setTimeout(() => res(null), 5000);
+      });
+    }
+
     // --- footage + the edit ---
     let vid: HTMLVideoElement | null = null;
     let shots: ReturnType<typeof buildEDL> = [];
@@ -283,7 +346,7 @@ export default function Studio() {
       setBusy("Watching your footage…");
       const an = await analyseFootage(vid, p => setProgress(Math.round(p * 100)));
       setBusy("Cutting the edit…");
-      shots = buildEDL(script, an, /energy|playful|bold/i.test(vibe));
+      shots = buildEDL(script, an, /energy|playful|bold/i.test(vibe), { transes: M.transes, cutScale: M.cutScale });
       // Single seek to the best moment, fully settled before we start recording.
       const v0 = vid!;
       v0.loop = true;
@@ -355,7 +418,12 @@ export default function Studio() {
         g.fillStyle = "#04060f"; g.fillRect(0, 0, W, H);
 
         if (el > acc) {
-          drawEndCardPro(g, W, H, product, script.cta, script.endline, domain, Math.min(1, (el - acc) / 2.6), A, B, el);
+          drawEndCardPro(
+            g, W, H, product, ctaText.trim() || script.cta, script.endline, domain,
+            Math.min(1, (el - acc) / 2.6), A, B, el,
+            (gg, ww, hh, tt) => drawBackdrop(bg, gg, ww, hh, tt, A, B),
+          );
+          if (logoImg) drawLogo(g, W, H, logoImg, Math.min(1, (el - acc) / 2.6));
         }
         else {
           const si = Math.max(0, starts.findIndex((st, i) => el >= st && el < st + script.scenes[i].t));
@@ -384,30 +452,32 @@ export default function Studio() {
 
           // everything visual lives under one virtual camera: handheld drift,
           // a slow push, and a hard shake on every cut
-          const cam = camera(el, cutLocal, cutDur, punchy ? 1 : 0.6);
+          const cam = camera(el, cutLocal, cutDur, M.cam * (punchy ? 1 : 0.75));
           g.save();
           applyCam(g, W, H, cam);
           if (noFootage) {
-            // background wash + light bands, then an ANIMATED MOCK-UP of the feature
-            drawMotionOnly(g, W, H, sc, lc, lc / sc.t, A, B, si, imgs);
+            // the chosen backdrop, then an ANIMATED MOCK-UP of the feature
+            drawMotionOnly(g, W, H, sc, lc, lc / sc.t, A, B, si, imgs, bg, el);
             if (!imgs.length) drawFeatureAnim(g, W, H, pickAnim(sc.headline + " " + sc.sub + " " + sc.vo, si), lc, lc / sc.t, A, B);
           } else if (vid) {
+            // footage sits ON the chosen backdrop rather than a flat fill
+            drawBackdrop(bg, g, W, H, el, A, B);
             drawShot({ g, W, H, vid, blurCv, shot, local: cutLocal, A, B });
           }
           g.restore();
 
           // depth: drifting specks in front of the footage, behind the type
-          particles(g, W, H, el, A, B, 0.85);
+          particles(g, W, H, el, A, B, M.particles);
           // glow the highlights, then colour-grade the whole frame
-          bloom(g, cv, W, H, 0.26);
-          grade(g, W, H, A, B, 0.32);
+          bloom(g, cv, W, H, light ? M.bloom * 0.4 : M.bloom);
+          if (!light) grade(g, W, H, A, B, M.grade);
 
-          // type goes on top of the grade so it stays crisp and pure white
+          // type goes on top of the grade so it stays crisp
           drawText(g, W, H, sc, lc, A, B);
-          lightLeak(g, W, H, el, A);
-          hud(g, W, H, el, A, B, si, script.scenes.length);
+          if (!light) lightLeak(g, W, H, el, A);
+          if (M.hud) hud(g, W, H, el, A, B, si, script.scenes.length);
           // RGB split for a few frames after each cut — free when it's not firing
-          chroma(g, cv, W, H, Math.exp(-cutLocal * 12));
+          chroma(g, cv, W, H, Math.exp(-cutLocal * 12) * M.chroma);
         }
         // cinematic bars ease in for the first half-second and stay
         letterbox(g, W, H, Math.min(1, el / 0.5));
@@ -530,6 +600,18 @@ export default function Studio() {
   }
 
   const S: any = {
+    // selectable option tile — used by every "the look" choice
+    pick: (on: boolean) => ({
+      textAlign: "left" as const,
+      padding: "10px 11px",
+      borderRadius: 11,
+      cursor: "pointer",
+      color: "#e8edff",
+      border: on ? "1px solid #2af0ff" : "1px solid #22305c",
+      background: on ? "rgba(42,240,255,.12)" : "rgba(8,12,30,.55)",
+      boxShadow: on ? "0 0 0 1px #2af0ff55 inset" : "none",
+      transition: "background .15s, border-color .15s",
+    }),
     input: { width: "100%", padding: "13px 15px", borderRadius: 12, border: "1px solid #2a3a68", background: "rgba(8,12,30,.8)", color: "#e8edff", fontSize: 15, outline: "none", fontFamily: "inherit" },
     label: { fontSize: 12.5, letterSpacing: 1.2, color: "#7f9ad0", marginBottom: 7, display: "block", fontWeight: 700 },
     card: { background: "linear-gradient(180deg,rgba(18,26,54,.9),rgba(10,14,34,.9))", border: "1px solid #22305c", borderRadius: 18, padding: 24 },
@@ -676,6 +758,75 @@ export default function Studio() {
                   </select>
                 </div>
               </div>
+              {/* THE LOOK — the questions that stop every ad coming out identical */}
+              <div style={{ borderTop: "1px solid #1b2650", paddingTop: 16, marginTop: 2 }}>
+                <div style={{ fontWeight: 900, fontSize: 15, marginBottom: 3 }}>🎨 The look</div>
+                <p style={{ color: "#7f9ad0", fontSize: 12.5, margin: "0 0 14px" }}>
+                  This is what makes your ad yours instead of a template. Change any of it.
+                </p>
+
+                <label style={S.label}>FORMAT</label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 16 }}>
+                  {FORMATS.map(f => (
+                    <button key={f.id} type="button" onClick={() => setFormat(f.id)} style={S.pick(format === f.id)}>
+                      <div style={{ fontWeight: 800, fontSize: 12.5 }}>{f.name}</div>
+                      <div style={{ fontSize: 10.5, color: "#7f9ad0", marginTop: 2 }}>{f.blurb}</div>
+                    </button>
+                  ))}
+                </div>
+
+                <label style={S.label}>BACKGROUND</label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 16 }}>
+                  {BACKDROPS.map(b => (
+                    <button key={b.id} type="button" onClick={() => setBg(b.id)} style={S.pick(bg === b.id)}>
+                      <div style={{ fontWeight: 800, fontSize: 12.5 }}>{b.name}</div>
+                      <div style={{ fontSize: 10.5, color: "#7f9ad0", marginTop: 2, lineHeight: 1.3 }}>{b.blurb}</div>
+                    </button>
+                  ))}
+                </div>
+
+                <label style={S.label}>ANIMATION STYLE</label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(130px,1fr))", gap: 8, marginBottom: 16 }}>
+                  {MOTIONS.map(m => (
+                    <button key={m.id} type="button" onClick={() => setMotion(m.id)} style={S.pick(motion === m.id)}>
+                      <div style={{ fontWeight: 800, fontSize: 12.5 }}>{m.name}</div>
+                      <div style={{ fontSize: 10.5, color: "#7f9ad0", marginTop: 2, lineHeight: 1.3 }}>{m.blurb}</div>
+                    </button>
+                  ))}
+                </div>
+
+                <label style={S.label}>TEXT STYLE</label>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(130px,1fr))", gap: 8, marginBottom: 16 }}>
+                  {TYPES.map(tp => (
+                    <button key={tp.id} type="button" onClick={() => setTypeStyleSel(tp.id)} style={S.pick(typeStyle === tp.id)}>
+                      <div style={{ fontWeight: 800, fontSize: 12.5 }}>{tp.name}</div>
+                      <div style={{ fontSize: 10.5, color: "#7f9ad0", marginTop: 2, lineHeight: 1.3 }}>{tp.blurb}</div>
+                    </button>
+                  ))}
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                  <div>
+                    <label style={S.label}>BUTTON TEXT <span style={{ color: "#5d78ad", letterSpacing: 0 }}>(optional)</span></label>
+                    <input style={S.input} value={ctaText} onChange={e => setCtaText(e.target.value)} placeholder="AI picks one" />
+                  </div>
+                  <div>
+                    <label style={S.label}>YOUR LOGO <span style={{ color: "#5d78ad", letterSpacing: 0 }}>(optional)</span></label>
+                    {logoUrl ? (
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <img src={logoUrl} alt="" style={{ height: 34, maxWidth: 110, objectFit: "contain", background: "#0b1024", borderRadius: 8, padding: 4 }} />
+                        <button type="button" onClick={() => { URL.revokeObjectURL(logoUrl); setLogoUrl(""); }} style={{ ...S.btn, ...S.ghost, padding: "7px 11px", fontSize: 11.5 }}>Remove</button>
+                      </div>
+                    ) : (
+                      <label style={{ ...S.input, display: "block", cursor: "pointer", color: "#7f9ad0" }}>
+                        Upload a PNG
+                        <input type="file" accept="image/*" onChange={onLogo} style={{ display: "none" }} />
+                      </label>
+                    )}
+                  </div>
+                </div>
+              </div>
+
               <div>
                 <label style={{ ...S.label, display: "flex", justifyContent: "space-between" }}>
                   <span>BRAND COLOURS</span>
