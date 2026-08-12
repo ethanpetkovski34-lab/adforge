@@ -11,6 +11,7 @@
     "dist:mac": "electron-builder --config build.json --mac"
   },
   "dependencies": {
+    "mp4-muxer": "^5.2.2",
     "next": "^16.2.12",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -18,9 +19,9 @@
   "devDependencies": {
     "@types/node": "^22",
     "@types/react": "^19",
-    "typescript": "^5.7.3",
     "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.3"
   },
   "main": "electron.js",
   "description": "AI ad maker — turns your product into a cinematic vertical ad.",

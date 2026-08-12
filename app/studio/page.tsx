@@ -1,9 +1,10 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { CHECKOUT_URL, isLive } from "../checkout";
-import { saveAd, listAds, deleteAd, clearAds, makeThumb, prettySize, prettyDate, fileName, extFor, type SavedAd } from "./library";
+import { saveAd, listAds, deleteAd, clearAds, makeThumb, prettySize, prettyDate, fileName, extFor, isPhoneReady, type SavedAd } from "./library";
 import { analyseFootage, buildEDL, drawShot, drawText, drawMotionOnly, drawFeatureAnim, pickAnim, lightLeak, letterbox, brandBar, type Script as EScript } from "./engine";
 import { camera, applyCam, particles, bloom, grade, chroma, hud, drawEndCardPro, prewarm } from "./motion";
+import { makeEncoder } from "./encode";
 
 type Script = EScript;
 
@@ -309,35 +310,10 @@ export default function Studio() {
 
     setBusy("Forging your ad…"); setProgress(0);
 
-    // --- mix audio + canvas into one recording ---
-    const dest = ac.createMediaStreamDestination();
-    // Hand the recorder EXACTLY the frames we draw, instead of letting it sample
-    // the canvas on its own 30Hz clock. Two clocks that don't line up beat
-    // against each other and duplicate/drop frames — which is judder you can see
-    // even when the average frame rate looks fine.
-    let vStream = (cv as any).captureStream(0) as MediaStream;
-    let vTrack = vStream.getVideoTracks()[0] as any;
-    const manualFrames = !!vTrack && typeof vTrack.requestFrame === "function";
-    if (!manualFrames) {
-      vStream = (cv as any).captureStream(30) as MediaStream;
-      vTrack = vStream.getVideoTracks()[0];
-    }
-    const mixed = new MediaStream([...vStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
-    // MP4/H.264 FIRST. A .webm won't open in QuickTime and is rejected outright
-    // by TikTok, Reels and Shorts — so a "successful" download used to hand you
-    // a file you couldn't actually use. webm stays as the fallback for browsers
-    // whose MediaRecorder can't mux mp4.
-    const mime = [
-      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-      "video/mp4;codecs=avc1,mp4a.40.2",
-      "video/mp4",
-      "video/webm;codecs=vp9,opus",
-      "video/webm;codecs=vp8,opus",
-      "video/webm",
-    ].find(m => MediaRecorder.isTypeSupported(m)) || "";
-    const rec = new MediaRecorder(mixed, mime ? { mimeType: mime, videoBitsPerSecond: pro ? 6_500_000 : 4_000_000 } : undefined);
-    const out: Blob[] = [];
-    rec.ondataavailable = e => { if (e.data.size) out.push(e.data); };
+    // --- encoder: canvas frames + narration into one mp4 ---
+    // Everything routes through one bus so the encoder can either tap it for raw
+    // PCM (WebCodecs) or hang a MediaStreamDestination off it (fallback).
+    const mix = ac.createGain();
 
     const A = script.palette.a, B = script.palette.b;
     const punchy = /energy|playful|bold/i.test(vibe);
@@ -350,16 +326,15 @@ export default function Studio() {
     // route each narration line into the recording
     lines.forEach(el => {
       if (!el) return;
-      try { ac.createMediaElementSource(el).connect(dest); } catch {}
+      try { ac.createMediaElementSource(el).connect(mix); } catch {}
     });
 
     // Build every cached gradient/sprite BEFORE recording starts, so the first
     // second of the ad isn't paying for them.
     prewarm(W, H, A, B);
 
-    const done = new Promise<void>(res => { rec.onstop = () => res(); });
-    rec.start();
     try { if (ac.state === "suspended") await Promise.race([ac.resume(), new Promise(r => setTimeout(r, 1200))]); } catch {}
+    const enc = await makeEncoder({ cv, W, H, fps: 30, bitrate: pro ? 6_500_000 : 4_000_000, ac, mix });
 
     let shotIdx = -1;
     let frameNo = 0;
@@ -488,7 +463,7 @@ export default function Studio() {
         if (lastFrameAt) gaps.push(now - lastFrameAt);
         lastFrameAt = now;
         frame(el);
-        if (manualFrames) { try { vTrack.requestFrame(); } catch {} }
+        enc.addFrame(el);
       };
 
       // Visible tab: rAF, aligned to the display.
@@ -522,15 +497,14 @@ export default function Studio() {
     (window as any).__adfFps = health.fps;
     (window as any).__adfHealth = health;
 
-    try { rec.stop(); } catch {}
-    await done;
+    setBusy("Packaging the video…");
+    const finalBlob = await enc.finish();
+    const outMime = enc.mime;
+    console.log(`AdForge: encoded with ${enc.kind} → ${outMime}, ${(finalBlob.size / 1048576).toFixed(2)} MB`);
     try { vid?.pause(); } catch {}
     lines.forEach(el => { try { el?.pause(); } catch {} });
     try { await ac.close(); } catch {}
     voUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
-    // the recorder is the authority on what it actually produced
-    const outMime = (rec.mimeType || mime || "video/webm").split(";")[0];
-    const finalBlob = new Blob(out, { type: outMime });
     setOutBlob(finalBlob);
     setOutMime(outMime);
     setOutUrl(URL.createObjectURL(finalBlob));
@@ -546,6 +520,7 @@ export default function Studio() {
         thumb: makeThumb(cv),
         blob: finalBlob,
         mime: outMime,
+        enc: enc.kind,
       };
       await saveAd(ad);
       listAds().then(setLibrary);
@@ -637,9 +612,14 @@ export default function Studio() {
                     <div style={{ padding: "11px 12px" }}>
                       <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ad.product}</div>
                       <div style={{ fontSize: 11.5, color: "#8ea5d4", marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ad.headline}</div>
-                      <div style={{ fontSize: 11, color: "#5d78ad", marginBottom: 10 }}>
+                      <div style={{ fontSize: 11, color: "#5d78ad", marginBottom: isPhoneReady(ad) ? 10 : 6 }}>
                         {prettyDate(ad.created)} · {Math.round(ad.duration)}s · {prettySize(ad.size)}
                       </div>
+                      {!isPhoneReady(ad) && (
+                        <div style={{ fontSize: 10.5, lineHeight: 1.35, color: "#ffcf6a", marginBottom: 9 }}>
+                          ⚠ Made before the phone fix — this one won't save to your camera roll. Re-forge it.
+                        </div>
+                      )}
                       <div style={{ display: "flex", gap: 7 }}>
                         <button onClick={() => downloadSaved(ad)} className="zbtn" style={{ ...S.btn, ...S.prime, flex: 1, padding: "9px", fontSize: 12 }}>⬇ Save</button>
                         <button onClick={() => removeAd(ad)} className="zbtn" title="Delete"

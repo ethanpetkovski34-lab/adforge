@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { notFound } from "next/navigation";
 import { buildEDL, drawShot, drawText, drawMotionOnly, drawFeatureAnim, pickAnim, lightLeak, letterbox, brandBar, type Script } from "../studio/engine";
 import { camera, applyCam, particles, bloom, grade, chroma, hud, drawEndCardPro } from "../studio/motion";
+import { makeEncoder } from "../studio/encode";
 
 const SCRIPT: Script = {
   hook: "Your workday just got 3x faster",
@@ -116,6 +117,55 @@ export default function Bench() {
       sx.fillStyle = "#000"; sx.fillRect(0, 0, s.width, s.height);
       times.forEach((t, i) => { one(t); sx.drawImage(src, i * cw, 0, cw, ch); });
       return `${cols} frames @ ${times.join(", ")}s`;
+    };
+
+    // Encoder round-trip: a short render through the real encoder, then walk the
+    // resulting MP4's boxes. Far faster than sitting through a full ad each time.
+    (window as any).testEncode = async (secs = 3, W = 720, H = 1280) => {
+      const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+      const g = cv.getContext("2d", { alpha: false })!;
+      const ac = new AudioContext();
+      const mix = ac.createGain();
+      const osc = ac.createOscillator(); osc.frequency.value = 220;
+      const gn = ac.createGain(); gn.gain.value = 0.2;
+      osc.connect(gn); gn.connect(mix); osc.start();
+      await ac.resume();
+
+      const enc = await makeEncoder({ cv, W, H, fps: 30, bitrate: 4_000_000, ac, mix });
+      const t0 = performance.now();
+      let n = 0;
+      while ((performance.now() - t0) / 1000 < secs) {
+        const t = (performance.now() - t0) / 1000;
+        g.fillStyle = `hsl(${(t * 90) % 360} 70% 45%)`; g.fillRect(0, 0, W, H);
+        g.fillStyle = "#fff"; g.font = "900 90px sans-serif"; g.fillText("T" + n, 60, 640);
+        enc.addFrame(t); n++;
+        await new Promise(r => setTimeout(r, 33));
+      }
+      const blob = await enc.finish();
+      osc.stop(); await ac.close();
+
+      // walk top-level boxes + sample tables
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      const dv = new DataView(buf.buffer);
+      const s4 = (o: number) => String.fromCharCode(...buf.slice(o, o + 4));
+      const top: string[] = []; let o = 0;
+      while (o + 8 <= buf.length && top.length < 40) {
+        let size = dv.getUint32(o); const type = s4(o + 4);
+        if (size === 1) size = Number(dv.getBigUint64(o + 8));
+        if (size === 0) size = buf.length - o;
+        if (size < 8) break;
+        top.push(type); o += size;
+      }
+      const res = {
+        kind: enc.kind, mime: enc.mime, bytes: blob.size, framesSent: n,
+        boxes: top, fragmented: top.includes("moof"),
+        moovBeforeMdat: top.indexOf("moov") >= 0 && top.indexOf("mdat") >= 0 && top.indexOf("moov") < top.indexOf("mdat"),
+        stats: (globalThis as any).__adfEnc,
+      };
+      (window as any).__enc = res;
+      (window as any).__encBlob = blob;
+      setOut(JSON.stringify(res));
+      return res;
     };
   }, [isProd]);
 

@@ -11,7 +11,13 @@ export type SavedAd = {
   thumb: string;        // small jpeg data-url for the grid
   blob: Blob;           // the actual video
   mime?: string;        // what it was recorded as — decides the file extension
+  enc?: string;         // which encoder made it; anything but 'webcodecs' is a
+                        // fragmented mp4/webm that phones won't save to the camera roll
 };
+
+/** Ads made before the WebCodecs encoder are fragmented mp4 or webm — they
+ *  download fine but won't import into Photos or upload to TikTok. */
+export const isPhoneReady = (ad: SavedAd) => ad.enc === 'webcodecs';
 
 /** mp4 opens everywhere and uploads to TikTok/Reels/Shorts; webm does neither,
  *  so the extension has to follow what was actually recorded. */
